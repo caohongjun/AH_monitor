@@ -1,0 +1,53 @@
+# A/港股舆情监控看板 - 自动构建与部署
+# 每天北京时间 18:00（UTC 10:00）运行 crawler.py 生成 index.html 并发布到 GitHub Pages
+name: Deploy Dashboard
+
+on:
+  schedule:
+    - cron: "0 10 * * *"        # UTC 10:00 = 北京时间 18:00（GitHub Actions 的 cron 只支持 UTC）
+  workflow_dispatch: {}          # 支持在 Actions 页面手动触发
+
+permissions:
+  contents: read                 # 读取仓库代码
+  pages: write                   # 发布 GitHub Pages
+  id-token: write                # Pages 部署所需的 OIDC 令牌
+
+# 同一时间只允许一个部署任务，避免并发覆盖
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 运行舆情爬虫生成看板
+        run: python crawler.py
+
+      - name: 上传 Pages 产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .                # 以仓库根目录（含生成的 index.html）作为站点根
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 部署到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
