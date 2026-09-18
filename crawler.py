@@ -701,6 +701,7 @@ def build_events(news_rows: List[dict]) -> List[dict]:
                 continue
             seen_keys.add(dedupe_md5)
             events.append({
+                "eid": dedupe_md5[:8],  # 卡片锚点 ID，速览区点击可跳转到详情
                 "time": row["time"],
                 "source": row["source"],
                 "tags": row["tags"],
@@ -714,6 +715,133 @@ def build_events(news_rows: List[dict]) -> List[dict]:
     # 第三步：时间倒序（无标的/时间并列时保持稳定顺序），截断到 MAX_EVENTS
     events.sort(key=lambda e: e["time"], reverse=True)
     return events[:MAX_EVENTS]
+
+
+# ============================ 今日速览（综合摘要） ============================
+
+# 高危标签：在重点事件评分中额外加权，更容易进入速览
+HIGH_RISK_TAGS = {"监管调查", "经营风险", "高管异动"}
+
+
+def event_score(event: dict) -> float:
+    """重点事件评分（纯规则，无 AI）：
+    命中标签数×2 + 跌幅绝对值(封顶10) + 高危标签加成3 + 有标的加成1"""
+    score = len(event["tags"]) * 2.0
+    pct = event["quote"]["pct"] if event["quote"] else None
+    if pct is not None:
+        score += min(abs(pct), 10.0)
+    score += len(HIGH_RISK_TAGS & set(event["tags"])) * 3.0
+    if event["stock"]:
+        score += 1.0
+    return score
+
+
+def summarize(events: List[dict]) -> dict:
+    """从全部事件中计算速览数据：跌幅榜 Top5 / 标签分布 / 重点事件 Top5"""
+    # 跌幅榜：只统计有行情数据的事件，按涨跌幅升序（跌得最多在前），同标的去重
+    seen_stock = set()
+    losers = []
+    for e in events:  # events 已按时间倒序，天然保证同标的取最新事件
+        if not e["quote"] or e["quote"]["pct"] is None or not e["stock"]:
+            continue
+        if e["stock"]["display"] in seen_stock:
+            continue
+        seen_stock.add(e["stock"]["display"])
+        losers.append(e)
+    losers.sort(key=lambda e: e["quote"]["pct"])
+    losers = losers[:5]
+
+    # 标签分布：各标签命中事件数，降序
+    tag_count: Dict[str, int] = {}
+    for e in events:
+        for tag in e["tags"]:
+            tag_count[tag] = tag_count.get(tag, 0) + 1
+    tag_rank = sorted(tag_count.items(), key=lambda kv: kv[1], reverse=True)
+
+    # 重点事件：按评分取前 5
+    top_events = sorted(events, key=event_score, reverse=True)[:5]
+
+    return {"losers": losers, "tag_rank": tag_rank, "top_events": top_events}
+
+
+def render_summary_block(summary: dict) -> str:
+    """渲染"今日速览"三栏区块：跌幅榜 / 事件类型分布 / 重点事件"""
+    # —— 栏 1：跌幅榜 ——
+    if summary["losers"]:
+        loser_rows = "".join(
+            f'<a href="#evt-{e["eid"]}" class="flex items-center justify-between gap-2 '
+            f'py-1.5 border-b border-slate-800/60 last:border-0 hover:bg-slate-800/40 '
+            f'rounded px-1 -mx-1 transition-colors">'
+            f'<span class="text-sm text-slate-200 truncate">{e["quote"]["name"]}'
+            f'<span class="text-[10px] font-mono text-slate-500 ml-1">{e["stock"]["display"]}</span></span>'
+            f'<span class="text-sm font-mono shrink-0 {pct_classes(e["quote"]["pct"])} '
+            f'px-1.5 py-0.5 rounded border">{fmt_pct(e["quote"]["pct"])}</span></a>'
+            for e in summary["losers"]
+        )
+    else:
+        loser_rows = '<div class="text-xs text-slate-600 py-3">今日暂无带行情标的</div>'
+
+    # —— 栏 2：事件类型分布（CSS 条形） ——
+    if summary["tag_rank"]:
+        max_count = max(c for _, c in summary["tag_rank"])
+        tag_rows = "".join(
+            f'<div class="flex items-center gap-2 py-1">'
+            f'<span class="text-xs text-slate-400 w-16 shrink-0 text-right">#{html.escape(tag)}</span>'
+            f'<div class="flex-1 h-3 bg-slate-800/60 rounded overflow-hidden">'
+            f'<div class="h-full rounded" style="width:{cnt / max_count * 100:.0f}%;'
+            f'background:linear-gradient(90deg,#b45309,#f59e0b)"></div></div>'
+            f'<span class="text-xs font-mono text-slate-300 w-6 shrink-0">{cnt}</span></div>'
+            for tag, cnt in summary["tag_rank"]
+        )
+    else:
+        tag_rows = '<div class="text-xs text-slate-600 py-3">今日无命中标签</div>'
+
+    # —— 栏 3：重点事件 Top5 ——
+    if summary["top_events"]:
+        top_rows = "".join(
+            f'<a href="#evt-{e["eid"]}" class="block py-1.5 border-b border-slate-800/60 '
+            f'last:border-0 hover:bg-slate-800/40 rounded px-1 -mx-1 transition-colors">'
+            f'<div class="flex items-center gap-1.5 text-[11px] text-slate-500 mb-0.5">'
+            f'<span class="font-mono">{e["time"]:%H:%M}</span>'
+            + "".join(
+                f'<span class="px-1 rounded {TAG_COLORS.get(t, "bg-slate-800 text-slate-400")} '
+                f'border border-slate-800">#{html.escape(t)}</span>'
+                for t in e["tags"][:2]
+            )
+            + (f'<span class="font-mono {pct_classes(e["quote"]["pct"])} px-1 rounded border shrink-0">'
+               f'{fmt_pct(e["quote"]["pct"])}</span>' if e["quote"] and e["quote"]["pct"] is not None else "")
+            + f'</div>'
+            f'<div class="text-sm text-slate-200 truncate">'
+            f'{html.escape(e["title"] or e["content"][:40])}</div></a>'
+            for e in summary["top_events"]
+        )
+    else:
+        top_rows = '<div class="text-xs text-slate-600 py-3">今日无事件</div>'
+
+    return f"""
+    <section class="mb-6 bg-gradient-to-br from-slate-900 to-slate-900/40 border border-slate-800
+                    rounded-xl p-4 sm:p-5">
+      <div class="flex items-center gap-2 mb-4">
+        <span class="text-amber-400 text-lg">📌</span>
+        <h2 class="text-base font-bold text-slate-100">今日速览</h2>
+        <span class="text-xs text-slate-500">点击条目可跳转到对应事件详情</span>
+      </div>
+      <div class="grid md:grid-cols-3 gap-5">
+        <div>
+          <div class="text-xs font-semibold text-rose-400/90 mb-2 tracking-wide">跌幅榜 TOP5（同一标的取最新）</div>
+          {loser_rows}
+        </div>
+        <div>
+          <div class="text-xs font-semibold text-amber-400/90 mb-2 tracking-wide">事件类型分布</div>
+          {tag_rows}
+        </div>
+        <div>
+          <div class="text-xs font-semibold text-cyan-400/90 mb-2 tracking-wide">重点事件 TOP5（规则评分）</div>
+          {top_rows}
+        </div>
+      </div>
+    </section>
+    """
 
 
 # ============================ HTML 渲染 ============================
@@ -831,7 +959,7 @@ def render_card(event: dict) -> str:
     )
 
     return f"""
-    <article class="event-card bg-slate-900/70 border border-slate-800 border-l-2 {card_accent(pct)}
+    <article id="evt-{event['eid']}" class="event-card bg-slate-900/70 border border-slate-800 border-l-2 {card_accent(pct)}
                     rounded-lg p-4 hover:border-slate-700 transition-colors"
              data-market="{stock['market'] if stock else 'NONE'}"
              data-tags="{' '.join(event['tags'])}"
@@ -907,6 +1035,9 @@ def render_html(events: List[dict]) -> str:
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
          "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
   .event-card[hidden] { display: none; }
+  html { scroll-behavior: smooth; }
+  /* 速览区点击跳转后，目标卡片高亮闪烁提示 */
+  .event-card:target { border-color: #f59e0b; box-shadow: 0 0 0 2px rgba(245,158,11,.35); }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
 </style>
@@ -948,6 +1079,9 @@ def render_html(events: List[dict]) -> str:
       <div class="text-2xl sm:text-3xl font-bold font-mono text-fuchsia-300">__HK_COUNT__</div>
     </div>
   </section>
+
+  <!-- 今日速览（综合摘要：跌幅榜 / 类型分布 / 重点事件） -->
+__SUMMARY__
 
   <!-- 筛选栏 -->
   <section class="mb-5 space-y-3">
@@ -1071,6 +1205,7 @@ function resetFilters() {
         .replace("__A_COUNT__", str(len(a_codes)))
         .replace("__HK_COUNT__", str(len(hk_codes)))
         .replace("__TAG_BUTTONS__", tag_buttons)
+        .replace("__SUMMARY__", render_summary_block(summarize(events)))
         .replace("__CARDS__", cards_html)
         .replace("__SOURCE_LINES__", source_lines)
     )
