@@ -48,9 +48,11 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      # 自动启用 Pages（首次运行免手动到 Settings 配置 Source）
+      # 自动启用 Pages（enablement: true 表示尚未启用时自动创建，免手动配置）
       - name: 启用 GitHub Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: 部署到 GitHub Pages
         id: deployment
