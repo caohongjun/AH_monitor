@@ -844,6 +844,140 @@ def render_summary_block(summary: dict) -> str:
     """
 
 
+# ============================ 自选关注 ============================
+
+# 自选关注列表：tcode 为腾讯行情代码，match 为 6 位裸代码用于匹配负面事件，
+# aliases 为公司简称/别称，用于从普通快讯中筛选该标的的最新动态
+# 如需增删标的，只需修改此列表（A股 sh+6位码 / 深市 sz+6位码 / 港股 hk+5位码）
+WATCHLIST = [
+    {"name": "招商银行", "tcode": "sh600036", "display": "600036.SH", "match": "600036",
+     "aliases": ["招商银行", "招行"]},
+    {"name": "长江电力", "tcode": "sh600900", "display": "600900.SH", "match": "600900",
+     "aliases": ["长江电力", "长电"]},
+    {"name": "贵州茅台", "tcode": "sh600519", "display": "600519.SH", "match": "600519",
+     "aliases": ["贵州茅台", "茅台"]},
+    {"name": "中国神华", "tcode": "sh601088", "display": "601088.SH", "match": "601088",
+     "aliases": ["中国神华", "神华"]},
+    {"name": "标普500南方", "tcode": "sh513500", "display": "513500.SH", "match": "513500",
+     "aliases": ["标普500", "标普"]},
+    {"name": "纳指ETF嘉实", "tcode": "sz159941", "display": "159941.SZ", "match": "159941",
+     "aliases": ["纳指", "纳斯达克"]},
+]
+
+# 每个持仓最多展示的相关舆情事件条数
+WATCH_RELATED_MAX = 2
+
+
+def build_watchlist(events: List[dict], news_rows: List[dict]) -> List[dict]:
+    """组装关注板块数据：批量拉取行情 + 负面事件优先、普通快讯回退的信息列表"""
+    quotes = fetch_quotes([w["tcode"] for w in WATCHLIST])
+    watchlist = []
+    for w in WATCHLIST:
+        # 第一优先：命中负面词库且标的代码精确匹配的事件，按评分排序
+        related = sorted(
+            (e for e in events
+             if e["stock"] and e["stock"]["code"] == w["match"]),
+            key=event_score, reverse=True,
+        )[:WATCH_RELATED_MAX]
+
+        # 第二优先：文本提及该标的（代码或别名）的普通快讯，时间倒序去重取最新
+        # 用于覆盖"该标的无负面新闻"时的日常动态展示
+        related_keys = {norm_title(e["title"] or e["content"][:40]) for e in related}
+        seen = set(related_keys)
+        latest_news = []
+        for row in sorted(news_rows, key=lambda r: r["time"], reverse=True):
+            text = f"{row['title']} {row['content']}".lower()
+            if not any(a.lower() in text for a in w["aliases"]) and w["match"] not in text:
+                continue
+            key = norm_title(row["title"] or row["content"][:40])
+            if key in seen:
+                continue
+            seen.add(key)
+            latest_news.append(row)
+            if len(related) + len(latest_news) >= WATCH_RELATED_MAX + 1:
+                break
+        watchlist.append({**w, "quote": quotes.get(w["tcode"]),
+                          "related": related, "latest_news": latest_news})
+    return watchlist
+
+
+def render_watchlist_block(watchlist: List[dict]) -> str:
+    """渲染"重点关注"板块：每个自选标的一张卡片（行情 + 最值得关注的事件）"""
+    cards = []
+    for w in watchlist:
+        quote = w["quote"]
+        # 行情区：接口失败或停牌时显示占位（名称始终用配置名，不用接口简称）
+        if quote and quote["price"]:
+            quote_html = (
+                f'<div class="flex items-baseline gap-2 mt-1">'
+                f'<span class="text-xl font-bold font-mono text-slate-100">'
+                f'{html.escape(str(quote["price"]))}</span>'
+                f'<span class="text-sm font-mono px-1.5 py-0.5 rounded border '
+                f'{pct_classes(quote["pct"])}">{fmt_pct(quote["pct"])}</span></div>'
+            )
+        else:
+            quote_html = (
+                '<div class="text-sm text-slate-600 mt-1">'
+                '行情暂无（可能已收盘）</div>'
+            )
+        name_html = html.escape(w["name"])
+
+        # 信息区：负面事件（红点、锚点跳转详情）优先，普通快讯（灰点、跳原文）补位
+        info_rows = []
+        for e in w["related"]:
+            title = html.escape(e["title"] or e["content"][:30])
+            info_rows.append(
+                f'<a href="#evt-{e["eid"]}" class="flex items-center gap-1.5 '
+                f'text-xs text-slate-300 hover:text-amber-300 truncate py-0.5" title="{title}">'
+                f'<span class="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0"></span>'
+                f'<span class="font-mono text-slate-500 shrink-0">{e["time"]:%H:%M}</span>'
+                f'<span class="truncate">{title}</span></a>'
+            )
+        for row in w.get("latest_news", []):
+            title = html.escape(row["title"] or row["content"][:30])
+            safe_row_url = row["url"] if row["url"].startswith(("http://", "https://")) else "#"
+            info_rows.append(
+                f'<a href="{html.escape(safe_row_url, quote=True)}" target="_blank" '
+                f'class="flex items-center gap-1.5 text-xs text-slate-400 '
+                f'hover:text-slate-200 truncate py-0.5" title="{title}">'
+                f'<span class="w-1.5 h-1.5 rounded-full bg-slate-600 shrink-0"></span>'
+                f'<span class="font-mono text-slate-500 shrink-0">{row["time"]:%H:%M}</span>'
+                f'<span class="truncate">{title}</span></a>'
+            )
+        if info_rows:
+            related_html = (
+                f'<div class="mt-2 pt-2 border-t border-slate-800/80 space-y-0.5">'
+                f'{"".join(info_rows)}</div>'
+            )
+        else:
+            related_html = (
+                '<div class="mt-2 pt-2 border-t border-slate-800/80">'
+                '<div class="text-xs text-slate-600">今日无相关资讯</div></div>'
+            )
+
+        cards.append(
+            f'<div class="bg-slate-900/70 border border-slate-800 rounded-lg p-3.5 '
+            f'hover:border-slate-700 transition-colors">'
+            f'<div class="flex items-center justify-between gap-1">'
+            f'<span class="text-sm font-semibold text-slate-100 truncate">{name_html}</span>'
+            f'<span class="text-[10px] font-mono text-slate-500">{w["display"]}</span></div>'
+            f'{quote_html}{related_html}</div>'
+        )
+
+    return f"""
+    <section class="mb-6">
+      <div class="flex items-center gap-2 mb-3">
+        <span class="text-cyan-400 text-lg">⭐</span>
+        <h2 class="text-base font-bold text-slate-100">重点关注</h2>
+        <span class="text-xs text-slate-500">自选标的行情与当日相关舆情（可在 crawler.py 的 WATCHLIST 中调整）</span>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        {"".join(cards)}
+      </div>
+    </section>
+    """
+
+
 # ============================ HTML 渲染 ============================
 
 def fmt_pct(pct: Optional[float]) -> str:
@@ -988,7 +1122,7 @@ def render_card(event: dict) -> str:
     """
 
 
-def render_html(events: List[dict]) -> str:
+def render_html(events: List[dict], news_rows: List[dict]) -> str:
     """把事件列表渲染进完整 HTML 模板（Tailwind CDN + 原生 JS 筛选）"""
     # 统计卡片数据
     a_codes = {e["stock"]["display"] for e in events if e["stock"] and e["stock"]["market"] == "A股"}
@@ -1082,6 +1216,9 @@ def render_html(events: List[dict]) -> str:
 
   <!-- 今日速览（综合摘要：跌幅榜 / 类型分布 / 重点事件） -->
 __SUMMARY__
+
+  <!-- 重点关注（自选标的行情 + 当日相关舆情） -->
+__WATCHLIST__
 
   <!-- 筛选栏 -->
   <section class="mb-5 space-y-3">
@@ -1206,6 +1343,7 @@ function resetFilters() {
         .replace("__HK_COUNT__", str(len(hk_codes)))
         .replace("__TAG_BUTTONS__", tag_buttons)
         .replace("__SUMMARY__", render_summary_block(summarize(events)))
+        .replace("__WATCHLIST__", render_watchlist_block(build_watchlist(events, news_rows)))
         .replace("__CARDS__", cards_html)
         .replace("__SOURCE_LINES__", source_lines)
     )
@@ -1223,7 +1361,7 @@ def main() -> int:
     hk_codes = {e["stock"]["display"] for e in events if e["stock"] and e["stock"]["market"] == "港股"}
     log(f"生成事件 {len(events)} 条 | A股标的 {len(a_codes)} 个 | 港股标的 {len(hk_codes)} 个")
 
-    page = render_html(events)
+    page = render_html(events, news_rows)
     with open(OUTPUT_HTML, "w", encoding="utf-8") as f:
         f.write(page)
     log(f"看板已写入 {OUTPUT_HTML}（{len(page) / 1024:.1f} KB）")
