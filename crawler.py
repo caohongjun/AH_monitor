@@ -722,6 +722,50 @@ def build_events(news_rows: List[dict]) -> List[dict]:
 # 高危标签：在重点事件评分中额外加权，更容易进入速览
 HIGH_RISK_TAGS = {"监管调查", "经营风险", "高管异动"}
 
+# 市场要闻筛选词库（纯规则，无 AI）：
+# 核心词：命中一条即视为重大（宏观决策机构、重大资本动作、市场级事件）
+MARKET_CORE_KEYWORDS = [
+    "国务院", "证监会", "央行", "中国人民银行", "美联储", "财政部", "发改委",
+    "降准", "降息", "加息", "LPR", "MLF", "IPO", "退市", "熔断", "并购重组",
+    "万亿", "关税", "制裁", "刺激计划", "地产新政",
+]
+# 一般词：单独命中不计重大，需与一般词/核心词合计命中 2 个以上才入选
+MARKET_KEYWORDS = [
+    "重磅", "重大", "新规", "获批", "批准", "停牌", "复牌", "涨跌停",
+    "北向资金", "融资融券", "回购", "增持", "减持", "国家战略", "规划",
+]
+
+# 速览区市场要闻展示条数
+HEADLINES_MAX = 8
+
+
+def headline_score(row: dict) -> int:
+    """要闻重要性评分：核心词每命中一个记 2 分，一般词记 1 分"""
+    text = f"{row['title']} {row['content']}"
+    score = sum(2 for kw in MARKET_CORE_KEYWORDS if kw in text)
+    score += sum(1 for kw in MARKET_KEYWORDS if kw in text)
+    return score
+
+
+def build_market_headlines(news_rows: List[dict], events: List[dict]) -> List[dict]:
+    """筛选市场要闻：从全部快讯中按重要性评分取头部条目，
+    排除已进入负面事件列表的快讯，并对同题跨源快讯做精确去重"""
+    event_keys = {norm_title(e["title"] or e["content"][:40]) for e in events}
+    seen = set()
+    candidates = []
+    for row in news_rows:
+        key = norm_title(row["title"] or row["content"][:40])
+        if key in event_keys or key in seen:
+            continue
+        score = headline_score(row)
+        if score <= 0:  # 未命中任何要闻词库的普通快讯不入选
+            continue
+        seen.add(key)
+        candidates.append((score, row["time"], row))
+    # 评分高的在前；同分按时间倒序（最新优先）
+    candidates.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return [{"score": s, **r} for s, _, r in candidates[:HEADLINES_MAX]]
+
 
 def event_score(event: dict) -> float:
     """重点事件评分（纯规则，无 AI）：
@@ -764,8 +808,8 @@ def summarize(events: List[dict]) -> dict:
     return {"losers": losers, "tag_rank": tag_rank, "top_events": top_events}
 
 
-def render_summary_block(summary: dict) -> str:
-    """渲染"今日速览"三栏区块：跌幅榜 / 事件类型分布 / 重点事件"""
+def render_summary_block(summary: dict, headlines: List[dict]) -> str:
+    """渲染"今日速览"区块：第一层为 A股市场要闻摘要，第二层为负面舆情三栏概览"""
     # —— 栏 1：跌幅榜 ——
     if summary["losers"]:
         loser_rows = "".join(
@@ -818,26 +862,60 @@ def render_summary_block(summary: dict) -> str:
     else:
         top_rows = '<div class="text-xs text-slate-600 py-3">今日无事件</div>'
 
+    # —— 市场要闻摘要（第一层）：时间 + 标题（跳原文）+ 来源 ——
+    if headlines:
+        headline_rows = "".join(
+            f'<a href="{html.escape(r["url"] if r["url"].startswith(("http://", "https://")) else "#", quote=True)}" '
+            f'target="_blank" class="flex items-baseline gap-2 py-1.5 '
+            f'border-b border-slate-800/50 last:border-0 hover:bg-slate-800/40 '
+            f'rounded px-1 -mx-1 transition-colors" '
+            f'title="{html.escape(r["title"] or r["content"][:60])}">'
+            f'<span class="font-mono text-[11px] text-slate-500 shrink-0">{r["time"]:%H:%M}</span>'
+            f'<span class="text-[13px] text-slate-200 truncate flex-1">'
+            f'{html.escape(r["title"] or r["content"][:60])}</span>'
+            f'<span class="text-[10px] text-slate-600 shrink-0">{html.escape(r["source"])}</span></a>'
+            for r in headlines
+        )
+    else:
+        headline_rows = '<div class="text-xs text-slate-600 py-3">今日暂无命中要闻词库的快讯</div>'
+
     return f"""
     <section class="mb-6 bg-gradient-to-br from-slate-900 to-slate-900/40 border border-slate-800
                     rounded-xl p-4 sm:p-5">
       <div class="flex items-center gap-2 mb-4">
         <span class="text-amber-400 text-lg">📌</span>
         <h2 class="text-base font-bold text-slate-100">今日速览</h2>
-        <span class="text-xs text-slate-500">点击条目可跳转到对应事件详情</span>
+        <span class="text-xs text-slate-500">先看市场要闻，再看负面舆情；点击条目可跳转原文或详情</span>
       </div>
-      <div class="grid md:grid-cols-3 gap-5">
-        <div>
-          <div class="text-xs font-semibold text-rose-400/90 mb-2 tracking-wide">跌幅榜 TOP5（同一标的取最新）</div>
-          {loser_rows}
+
+      <!-- 第一层：市场要闻（重大事件与政策动态） -->
+      <div class="mb-5">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-xs font-semibold text-slate-300 tracking-wide">一、市场要闻</span>
+          <span class="text-[10px] text-slate-600">按重要性评分排序 · 涵盖政策 / 宏观 / 重大资本动作</span>
         </div>
-        <div>
-          <div class="text-xs font-semibold text-amber-400/90 mb-2 tracking-wide">事件类型分布</div>
-          {tag_rows}
+        {headline_rows}
+      </div>
+
+      <!-- 第二层：负面舆情概览（三栏） -->
+      <div>
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-xs font-semibold text-rose-400/90 tracking-wide">二、负面舆情概览</span>
+          <span class="text-[10px] text-slate-600">点击条目跳转到对应事件详情</span>
         </div>
-        <div>
-          <div class="text-xs font-semibold text-cyan-400/90 mb-2 tracking-wide">重点事件 TOP5（规则评分）</div>
-          {top_rows}
+        <div class="grid md:grid-cols-3 gap-5">
+          <div>
+            <div class="text-xs font-semibold text-rose-400/90 mb-2 tracking-wide">跌幅榜 TOP5（同一标的取最新）</div>
+            {loser_rows}
+          </div>
+          <div>
+            <div class="text-xs font-semibold text-amber-400/90 mb-2 tracking-wide">事件类型分布</div>
+            {tag_rows}
+          </div>
+          <div>
+            <div class="text-xs font-semibold text-cyan-400/90 mb-2 tracking-wide">重点事件 TOP5（规则评分）</div>
+            {top_rows}
+          </div>
         </div>
       </div>
     </section>
@@ -1342,7 +1420,8 @@ function resetFilters() {
         .replace("__A_COUNT__", str(len(a_codes)))
         .replace("__HK_COUNT__", str(len(hk_codes)))
         .replace("__TAG_BUTTONS__", tag_buttons)
-        .replace("__SUMMARY__", render_summary_block(summarize(events)))
+        .replace("__SUMMARY__", render_summary_block(
+            summarize(events), build_market_headlines(news_rows, events)))
         .replace("__WATCHLIST__", render_watchlist_block(build_watchlist(events, news_rows)))
         .replace("__CARDS__", cards_html)
         .replace("__SOURCE_LINES__", source_lines)
