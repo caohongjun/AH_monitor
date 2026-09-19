@@ -63,15 +63,23 @@ python crawler.py
 
 ```text
 ├── .github/workflows/deploy.yml   # GitHub Actions 定时构建 + Pages 部署
-├── crawler.py                     # 核心脚本：抓取/提取/词库/行情/渲染
-├── index.html                     # 生成产物（每次构建覆盖）
+├── crawler.py                     # 入口编排：抓取 → 加工 → 渲染 → 写文件
+├── config.py                      # 全部配置与词库（调整词库/自选标的只动它）
+├── utils.py                       # 基础工具：会话 / 日志 / 时间 / 文本处理
+├── spiders.py                     # 数据抓取：财经快讯 / 行情 / RSS(Atom) / HN / ai-bot
+├── processor.py                   # 数据加工：标的提取 / 负面匹配 / 事件组装 / 速览计算
+├── render.py                      # 页面渲染：index.html / finance.html / global.html
+├── index.html                     # 生成产物：今日热榜（每次构建覆盖）
+├── finance.html                   # 生成产物：A/港股财经舆情页
+├── global.html                    # 生成产物：海外产品页
 ├── requirements.txt               # Python 依赖
 └── README.md
 ```
 
 ## 自定义
 
-- **调整词库**：编辑 `crawler.py` 中的 `KEYWORD_GROUPS`
-- **调整条数上限**：`MAX_EVENTS`（默认 100）
-- **增删数据源**：在 `SOURCE_REGISTRY` 注册新的抓取函数，返回统一结构的列表即可
+- **调整词库**：编辑 `config.py` 中的 `KEYWORD_GROUPS`（负面词）/ `MARKET_*`（要闻词）/ `AI_*`（AI 词）
+- **增删自选关注标的**：编辑 `config.py` 中的 `WATCHLIST` 列表
+- **调整条数上限**：`config.py` 中的 `MAX_EVENTS`（默认 100）
+- **增删数据源**：在 `spiders.py` 增加抓取函数并在 `build_hotboard_data` / `build_global_data` / 财经采集流程中注册
 - **调整运行时间**：修改 `deploy.yml` 中的 cron 表达式（注意填 UTC 时间）
