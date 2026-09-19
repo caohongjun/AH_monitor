@@ -15,6 +15,126 @@ from utils import (norm_title, zh_tags, is_ai_item, is_ai_product,
 from processor import summarize, build_market_headlines, build_watchlist
 
 
+# ============================ 主题（dark/light）与导航右侧控件 ============================
+# 设计原则：dark 为默认主题且像素级不变；light 模式通过 html.light 类集中覆盖
+# 页面实际用到的 slate 色板与强调色文字，避免逐模板改 class。
+THEME_HEAD = """<script>
+/* 首屏前应用持久化主题，避免亮色模式闪一下深色（FOUC）；默认 dark */
+(function(){try{if(localStorage.getItem('ah-theme')==='light'){document.documentElement.classList.add('light');}}catch(e){}})();
+/* 切换 dark/light：写入 localStorage 并同步按钮图标（暗色页显示"切到亮色"☀️，反之 🌙）*/
+function toggleTheme(){
+  var light=document.documentElement.classList.toggle('light');
+  try{localStorage.setItem('ah-theme',light?'light':'dark');}catch(e){}
+  var ic=document.getElementById('themeToggleIcon'), tx=document.getElementById('themeToggleText');
+  if(ic)ic.textContent=light?'🌙':'☀️';
+  if(tx)tx.textContent=light?'暗色':'亮色';
+}
+document.addEventListener('DOMContentLoaded',function(){
+  var light=document.documentElement.classList.contains('light');
+  var ic=document.getElementById('themeToggleIcon'), tx=document.getElementById('themeToggleText');
+  if(ic)ic.textContent=light?'🌙':'☀️';
+  if(tx)tx.textContent=light?'暗色':'亮色';
+});
+</script>
+<style>
+  /* —— light 模式配色覆盖（仅 html.light 生效；默认 dark 不变）—— */
+  html.light body { background-color:#f1f5f9 !important; }
+  /* 背景：slate-950/900/800 深色层级 → 白 / 浅灰 */
+  html.light .bg-slate-950 { background-color:#f1f5f9 !important; }
+  html.light .bg-slate-900 { background-color:#ffffff !important; }
+  html.light .bg-slate-900\\/60 { background-color:rgba(255,255,255,.85) !important; }
+  html.light .bg-slate-900\\/70 { background-color:rgba(255,255,255,.92) !important; }
+  html.light .bg-slate-800 { background-color:#e2e8f0 !important; }
+  html.light .bg-slate-800\\/60 { background-color:rgba(226,232,240,.7) !important; }
+  html.light .bg-slate-800\\/70 { background-color:rgba(226,232,240,.85) !important; }
+  html.light .bg-slate-700\\/30 { background-color:rgba(15,23,42,.05) !important; }
+  html.light .bg-slate-600 { background-color:#cbd5e1 !important; }
+  html.light .bg-slate-500\\/10 { background-color:rgba(15,23,42,.04) !important; }
+  html.light .bg-slate-500\\/15 { background-color:rgba(15,23,42,.06) !important; }
+  html.light .hover\\:bg-slate-800\\/30:hover { background-color:rgba(15,23,42,.04) !important; }
+  html.light .hover\\:bg-slate-800\\/40:hover { background-color:rgba(15,23,42,.05) !important; }
+  html.light .hover\\:bg-slate-800\\/60:hover { background-color:rgba(15,23,42,.06) !important; }
+  /* 边框：深色描边 → slate-200/300 */
+  html.light .border-slate-800,
+  html.light .border-slate-800\\/40,
+  html.light .border-slate-800\\/50,
+  html.light .border-slate-800\\/60,
+  html.light .border-slate-800\\/80 { border-color:#e2e8f0 !important; }
+  html.light .border-slate-700,
+  html.light .hover\\:border-slate-700:hover,
+  html.light .border-slate-600 { border-color:#cbd5e1 !important; }
+  html.light .border-slate-500\\/20,
+  html.light .border-slate-500\\/25,
+  html.light .border-slate-500\\/30 { border-color:rgba(15,23,42,.12) !important; }
+  /* 渐变卡片（from-slate-900 → to-slate-900/40）→ 白 → slate-50 */
+  html.light .from-slate-900 {
+    --tw-gradient-from:#ffffff;
+    --tw-gradient-stops:var(--tw-gradient-from), var(--tw-gradient-to);
+  }
+  html.light .to-slate-900\\/40 { --tw-gradient-to:rgba(248,250,252,.9); }
+  /* 正文文字：浅 slate → slate-900；次要文字逐级加深 */
+  html.light .text-slate-50,
+  html.light .text-slate-100,
+  html.light .text-slate-200,
+  html.light .text-slate-300,
+  html.light .hover\\:text-slate-100:hover,
+  html.light .hover\\:text-slate-200:hover { color:#0f172a !important; }
+  html.light .text-slate-400 { color:#475569 !important; }
+  html.light .text-slate-500 { color:#64748b !important; }
+  html.light .text-slate-600 { color:#94a3b8 !important; }
+  html.light .text-slate-700 { color:#cbd5e1 !important; }
+  html.light .placeholder-slate-600::placeholder { color:#94a3b8 !important; }
+  /* 强调色文字（在深色底上偏浅）→ 加深到 700 档保证白底可读 */
+  html.light .text-amber-300,
+  html.light .text-amber-400,
+  html.light .text-amber-400\\/80,
+  html.light .text-amber-400\\/90 { color:#b45309 !important; }
+  html.light .hover\\:text-amber-300:hover,
+  html.light .hover\\:text-amber-400:hover { color:#92400e !important; }
+  html.light .text-cyan-300,
+  html.light .text-cyan-300\\/80,
+  html.light .text-cyan-300\\/90,
+  html.light .text-cyan-400,
+  html.light .text-cyan-400\\/90,
+  html.light .text-cyan-500\\/80 { color:#0e7490 !important; }
+  html.light .text-fuchsia-300,
+  html.light .text-fuchsia-300\\/90 { color:#a21caf !important; }
+  html.light .text-emerald-400 { color:#047857 !important; }
+  html.light .text-rose-300,
+  html.light .text-rose-400,
+  html.light .text-rose-400\\/90 { color:#be123c !important; }
+  html.light .text-orange-300\\/90 { color:#c2410c !important; }
+  /* 导航选中态琥珀底在白地上减弱浓度，描边加深 */
+  html.light .bg-amber-500\\/20 { background-color:rgba(217,119,6,.12) !important; }
+  html.light .border-amber-500\\/40 { border-color:rgba(180,83,9,.45) !important; }
+  html.light .hover\\:border-amber-500\\/40:hover,
+  html.light .hover\\:border-amber-500\\/50:hover { border-color:rgba(180,83,9,.55) !important; }
+  /* 亮色滚动条 */
+  html.light ::-webkit-scrollbar-thumb { background:#cbd5e1; }
+  html.light ::-webkit-scrollbar-thumb:hover { background:#94a3b8; }
+  html.light .scroll-thin::-webkit-scrollbar-thumb { background:#cbd5e1; }
+  html.light .scroll-thin { scrollbar-color:#cbd5e1 transparent; }
+</style>"""
+
+
+def _nav_extras() -> str:
+    """导航最右侧控件：每日定时构建时间 + dark/light 主题切换按钮"""
+    return """<div class="ml-auto flex items-center gap-2">
+      <span class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg
+                   border border-slate-700 text-slate-400 select-none"
+            title="GitHub Actions 每日定时构建（UTC 10:00 = 北京时间 18:00，实际有 0~30 分钟调度延迟）">
+        <span>⏰</span><span>每日 18:00</span><span class="text-slate-600 hidden sm:inline">北京时间</span>
+      </span>
+      <button type="button" onclick="toggleTheme()"
+              class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg
+                     border border-slate-700 text-slate-300 hover:border-amber-500/50
+                     hover:text-amber-400 transition-colors"
+              title="切换深色 / 浅色模式（自动记忆）">
+        <span id="themeToggleIcon">☀️</span><span id="themeToggleText">亮色</span>
+      </button>
+    </div>"""
+
+
 def _brief_rows(items: List[dict]) -> str:
     """要点条目渲染：时间 + 一行标题（点击跳原文）+ 来源，精要风格"""
     if not items:
@@ -136,7 +256,7 @@ def render_negative_overview(summary: dict) -> str:
     """
 
 def render_nav(active: str) -> str:
-    """渲染顶部导航条：当前页高亮（Tailwind 无 JS 实现）"""
+    """渲染顶部导航条：左侧页面切换（当前页高亮），右侧每日定时时间 + 主题切换"""
     links = "".join(
         f'<a href="{file}" class="px-3 py-1.5 rounded-lg text-sm font-medium '
         + (
@@ -147,7 +267,8 @@ def render_nav(active: str) -> str:
         + f' transition-colors">{icon} {label}</a>'
         for file, icon, label in NAV_ITEMS
     )
-    return f'<nav class="flex flex-wrap items-center gap-1.5 mb-6">{links}</nav>'
+    return (f'<nav class="flex flex-wrap items-center gap-1.5 mb-6">{links}'
+            f'{_nav_extras()}</nav>')
 
 def render_watchlist_block(watchlist: List[dict]) -> str:
     """渲染"重点关注"板块：每个自选标的一张卡片（行情 + 最值得关注的事件）"""
@@ -412,6 +533,7 @@ def render_finance_page(events: List[dict], news_rows: List[dict]) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>财经与股市 · A/港股舆情监控</title>
 <script src="https://cdn.tailwindcss.com"></script>
+__THEME_HEAD__
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
          "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
@@ -599,6 +721,7 @@ function resetFilters() {
         .replace("__A_COUNT__", str(len(a_codes)))
         .replace("__HK_COUNT__", str(len(hk_codes)))
         .replace("__TAG_BUTTONS__", tag_buttons)
+        .replace("__THEME_HEAD__", THEME_HEAD)
         .replace("__NAV__", render_nav("finance.html"))
         .replace("__NEGATIVE__", render_negative_overview(summarize(events)))
         .replace("__WATCHLIST__", render_watchlist_block(build_watchlist(events, news_rows)))
@@ -650,6 +773,7 @@ def _info_page_shell(title: str, icon: str, active: str, subtitle: str,
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{title}</title>
 <script src="https://cdn.tailwindcss.com"></script>
+{THEME_HEAD}
 <style>
   /* 模块内部滚动区域：深色细滚动条 */
   .scroll-thin::-webkit-scrollbar {{ width: 6px; height: 6px; }}
