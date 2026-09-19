@@ -901,36 +901,117 @@ def fetch_36kr_rss(limit: int = 15) -> List[dict]:
         return []
 
 
+def _parse_aibot_date(text: str, now: datetime) -> Optional[datetime]:
+    """解析 ai-bot 日期标签（形如 '9月18·周五'）为北京时间日期对象。
+    标签无年份：月份大于当前月时判定为去年（处理 1 月初看到去年 12 月数据的情况）"""
+    m = re.search(r"(\d{1,2})\s*月\s*(\d{1,2})\s*日?", text)
+    if not m:
+        return None
+    month, day = int(m.group(1)), int(m.group(2))
+    year = now.year if month <= now.month else now.year - 1
+    try:
+        return datetime(year, month, day, 12, 0, tzinfo=CN_TZ)
+    except ValueError:
+        return None
+
+
 def fetch_aibot_news(limit: int = 15) -> List[dict]:
-    """ai-bot.cn 每日 AI 新闻页：页面正文用 h2 列出最新新闻（按时间倒序），
-    提取 h2 标题及其详情链接，取前 limit 条作为当日 AI 新闻"""
+    """ai-bot.cn 每日 AI 新闻页：页面按 .news-date 日期标签分组（工作日更新），
+    只抓当天分组；当天无更新（如周六、周日）则回退到最近一个有数据的工作日，
+    其他日期一律不取。日期分组在嵌套的 .news-list 中，需递归扁平化处理。"""
     try:
         resp = SESSION.get("https://ai-bot.cn/daily-ai-news/", timeout=15)
         resp.raise_for_status()
         resp.encoding = "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
-        items = []
-        for h2 in soup.find_all("h2"):
-            a = h2.find("a", href=True)
-            if not a:
-                continue
-            title = a.get_text(strip=True)
-            href = a["href"]
-            if len(title) < 6 or not href or "ai-bot.cn" not in href:
-                continue
-            items.append({
-                "title": title,
-                "url": href,
-                "summary": "",
-                "source": "ai-bot",
-            })
-            if len(items) >= limit:
-                break
-        print(f"  [ai-bot 新闻] {len(items)} 条")
-        return items
     except Exception as e:
         print(f"  [ai-bot 新闻] 抓取失败: {e}")
         return []
+
+    root = soup.select_one(".news-list")
+    if not root:
+        print("  [ai-bot 新闻] 页面结构变更：未找到 .news-list")
+        return []
+
+    # 递归扁平化嵌套 .news-list，得到按文档顺序（时间倒序）的日期/条目流
+    stream: List[tuple] = []
+
+    def _flatten(list_el) -> None:
+        """递归遍历 news-list：收集 ('date', 日期文本) 与 ('item', 条目元素)"""
+        for c in list_el.children:
+            if not hasattr(c, "name") or not c.name:
+                continue
+            cls = c.get("class", [])
+            if "news-date" in cls:
+                stream.append(("date", c.get_text(strip=True)))
+            elif "news-item" in cls:
+                stream.append(("item", c))
+            elif "news-list" in cls:
+                _flatten(c)
+
+    _flatten(root)
+
+    # 将流聚合为 [(datetime, [条目元素])]，保持文档倒序
+    groups: List[tuple] = []
+    cur_date: Optional[datetime] = None
+    cur_items: list = []
+    for kind, payload in stream:
+        if kind == "date":
+            if cur_date is not None:
+                groups.append((cur_date, cur_items))
+            cur_date = _parse_aibot_date(payload, NOW)
+            cur_items = []
+        elif cur_date is not None:
+            cur_items.append(payload)
+    if cur_date is not None:
+        groups.append((cur_date, cur_items))
+
+    if not groups:
+        print("  [ai-bot 新闻] 未解析到任何日期分组")
+        return []
+
+    today = NOW.replace(hour=0, minute=0, second=0, microsecond=0)
+    # 优先匹配当天分组；没有则取文档中第一个不晚于今天的分组（即最近更新日，如周五）
+    target = next((g for g in groups if g[0].date() == today.date()), None)
+    if target is None:
+        target = next((g for g in groups if g[0] <= today), None)
+    if target is None:
+        print("  [ai-bot 新闻] 当天及历史分组均未找到")
+        return []
+
+    target_date, boxes = target
+    # 保护：最近分组距今超过 7 天视为站点长期停更，不展示陈旧数据
+    if (today - target_date).days > 7:
+        print(f"  [ai-bot 新闻] 最新数据为 {target_date:%m月%d日}，已超过 7 天，跳过")
+        return []
+
+    items: List[dict] = []
+    for box in boxes[:limit]:
+        a = box.select_one("h2 a")
+        if not a:
+            continue
+        title = a.get_text(strip=True)
+        href = a.get("href", "")
+        if len(title) < 6 or not href:
+            continue
+        # 摘要在 p 中，其中 .news-time 是"来源：xxx"尾巴，提取前先剔除
+        summary = ""
+        p_tag = box.select_one("p")
+        if p_tag:
+            src = p_tag.select_one(".news-time")
+            if src:
+                src.extract()
+            summary = p_tag.get_text(" ", strip=True)[:120]
+        items.append({
+            "title": title,
+            "url": href,
+            "summary": summary,
+            "source": "ai-bot",
+            "time": target_date,
+        })
+    print(f"  [ai-bot 新闻] {target_date:%m月%d日} 分组 {len(items)} 条")
+    return items
+
 
 
 def build_hotboard_data(market_headlines: dict = None) -> dict:
