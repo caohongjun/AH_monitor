@@ -122,8 +122,8 @@ def _nav_extras() -> str:
     return """<div class="ml-auto flex items-center gap-2">
       <span class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg
                    border border-slate-700 text-slate-400 select-none"
-            title="GitHub Actions 每日定时构建（UTC 10:00 = 北京时间 18:00，实际有 0~30 分钟调度延迟）">
-        <span>⏰</span><span>每日 18:00</span><span class="text-slate-600 hidden sm:inline">北京时间</span>
+            title="GitHub Actions 每日定时构建（UTC 01:30 / 10:00 = 北京时间 09:30 / 18:00，实际有 0~30 分钟调度延迟）">
+        <span>⏰</span><span>每日 09:30 / 18:00</span><span class="text-slate-600 hidden sm:inline">北京时间</span>
       </span>
       <button type="button" onclick="toggleTheme()"
               class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg
@@ -502,7 +502,7 @@ def render_finance_page(events: List[dict], news_rows: List[dict]) -> str:
         <div class="text-center py-24 text-slate-500">
           <div class="text-5xl mb-4">🛡️</div>
           <p class="text-lg">今日各数据源暂无命中负面/突发关键词的舆情</p>
-          <p class="text-sm mt-2 text-slate-600">下次构建时间：北京时间 18:00（也可在 GitHub Actions 手动触发）</p>
+          <p class="text-sm mt-2 text-slate-600">下次构建时间：北京时间 09:30 / 18:00（也可在 GitHub Actions 手动触发）</p>
         </div>
         """
 
@@ -557,7 +557,7 @@ __THEME_HEAD__
           <span class="text-slate-100">· A/港股舆情监控看板</span>
         </h1>
         <p class="text-xs text-slate-500 mt-1.5">
-          多源财经快讯 · 负面关键词命中 · 腾讯行情叠加 · 每日 18:00（北京时间）自动构建
+          多源财经快讯 · 负面关键词命中 · 腾讯行情叠加 · 每日 09:30 / 18:00（北京时间）自动构建
         </p>
       </div>
       <div class="text-right text-xs text-slate-500">

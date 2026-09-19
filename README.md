@@ -51,7 +51,7 @@ python crawler.py
 
 ## 定时说明
 
-- 工作流每天 **UTC 10:00（北京时间 18:00）** 自动运行（`.github/workflows/deploy.yml`）
+- 工作流每天 **UTC 01:30 / 10:00（北京时间 09:30 / 18:00）各一次** 自动运行（`.github/workflows/deploy.yml`）
 - GitHub Actions 的 cron 有 0~30 分钟的正常调度延迟，属正常现象
 - 手动触发不受时间限制，随时可刷新当日数据
 

@@ -1,10 +1,11 @@
 # A/港股舆情监控看板 - 自动构建与部署
-# 每天北京时间 18:00（UTC 10:00）运行 crawler.py 生成 index.html 并发布到 GitHub Pages
+# 每天北京时间 09:30（UTC 01:30）和 18:00（UTC 10:00）各运行一次 crawler.py 生成页面并发布到 GitHub Pages
 name: Deploy Dashboard
 
 on:
   schedule:
-    - cron: "0 10 * * *"        # UTC 10:00 = 北京时间 18:00（GitHub Actions 的 cron 只支持 UTC）
+    - cron: "30 1 * * *"        # UTC 01:30 = 北京时间 09:30（GitHub Actions 的 cron 只支持 UTC）
+    - cron: "0 10 * * *"        # UTC 10:00 = 北京时间 18:00
   workflow_dispatch: {}          # 支持在 Actions 页面手动触发
 
 permissions:
