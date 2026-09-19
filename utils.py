@@ -122,6 +122,35 @@ def dedupe_and_sort(items: List[dict], limit: int) -> List[dict]:
     return out
 
 
+def filter_by_time_rule(items: List[dict], time_rule: str,
+                        source_name: str = "") -> List[dict]:
+    """按信息源独立的时间窗口策略过滤条目（规则见 config.SOURCE_RULES）：
+    - today_yesterday：当天有数据只取当天；当天为空则取前一天；两天都无则返回空列表，
+      绝不保留更早数据，防止历史数据爆炸；无时间字段无法判定日期的条目一律丢弃。
+    - realtime / 其他：实时榜单快照，不做日期过滤，原样返回。
+    """
+    if time_rule != "today_yesterday":
+        return items
+    today = NOW.astimezone(CN_TZ).date()
+    yesterday = today - timedelta(days=1)
+    todays, ydays = [], []
+    for it in items:
+        t = it.get("time")
+        if t is None:
+            continue  # 无法证明是今天/昨天的条目从严丢弃，避免历史数据混入
+        d = t.astimezone(CN_TZ).date()
+        if d == today:
+            todays.append(it)
+        elif d == yesterday:
+            ydays.append(it)
+    if todays:
+        return todays
+    if ydays and source_name:
+        print(f"  [{source_name}] 当天无更新，展示前一天数据 {len(ydays)} 条")
+    return ydays
+
+
+
 # ============================ 股票代码结构化解析 ============================
 
 def classify_a_share(code: str, suffix_hint: str = "") -> Optional[dict]:

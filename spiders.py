@@ -16,10 +16,10 @@ from config import (CN_TZ, NOW, TODAY, TODAY_START, MAX_EVENTS, OUTPUT_HTML,
                     SOURCE_STATS, HIGH_RISK_TAGS, MARKET_CORE_KEYWORDS,
                     MARKET_KEYWORDS, MARKET_GLOBAL_KEYWORDS, BRIEF_GROUP_MAX,
                     HEADLINES_MAX, NAV_ITEMS, WATCHLIST, WATCH_RELATED_MAX,
-                    GLOBAL_TAG_RULES, AI_CORE, AI_PRODUCT_VERBS)
+                    GLOBAL_TAG_RULES, AI_CORE, AI_PRODUCT_VERBS, source_rule)
 from utils import (SESSION, http_get, log, strip_html, parse_dt, ts_to_dt,
                    ms_to_dt, is_today, norm_title, dedupe_and_sort,
-                   is_ai_item, is_ai_product, zh_tags,
+                   is_ai_item, is_ai_product, zh_tags, filter_by_time_rule,
                    parse_sina_stocks, parse_em_stock_list)
 
 
@@ -351,9 +351,14 @@ def fetch_quotes(tcodes: List[str]) -> Dict[str, dict]:
 import email.utils as _email_utils
 
 
-def fetch_rss(url: str, source_name: str, limit: int = 30, today_only: bool = True) -> List[dict]:
+def fetch_rss(url: str, source_name: str, limit: int = 20,
+              time_rule: str = "today_yesterday") -> List[dict]:
     """通用 RSS 2.0 / Atom 抓取解析：返回条目列表，时间统一转为北京时间。
-    today_only=True 时仅保留北京时间当天的条目（无时间的条目保留，无法判定日期时不丢弃）"""
+    时间策略 time_rule 见 config.SOURCE_RULES：today_yesterday 只保留当天（无则前一天，
+    再无则空），realtime 不过滤。为避免先截断后过滤导致丢数据，解析时多取若干条，
+    过滤完成后再截到 limit。"""
+    # 解析上限放大：feed 里可能混有更早的条目，多取才能覆盖今天/昨天的全量
+    fetch_cap = max(50, limit * 3)
     try:
         resp = SESSION.get(url, timeout=15,
                            headers={"Accept": "application/rss+xml, application/xml, text/xml, */*"})
@@ -382,46 +387,29 @@ def fetch_rss(url: str, source_name: str, limit: int = 30, today_only: bool = Tr
                 continue
             items.append({"title": title, "url": link, "time": dt,
                           "summary": desc[:120], "source": source_name})
-            if len(items) >= limit:
+            if len(items) >= fetch_cap:
                 break
-        print(f"  [RSS] {source_name}: {len(items)} 条（Atom）")
-        # 不 return，统一走下方三级回退过滤
-    # —— RSS 2.0 格式 ——
-    for item in root.iter("item"):
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        pub = (item.findtext("pubDate") or "").strip()
-        desc = html.unescape(re.sub(r"<[^>]+>", " ", item.findtext("description") or "")).strip()
-        # RFC2822 时间解析并统一到北京时间
-        try:
-            dt = _email_utils.parsedate_to_datetime(pub).astimezone(CN_TZ) if pub else None
-        except Exception:
-            dt = None
-        if not title:
-            continue
-        items.append({"title": title, "url": link, "time": dt,
-                      "summary": desc[:120], "source": source_name})
-        if len(items) >= limit:
-            break
+    else:
+        # —— RSS 2.0 格式 ——
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            pub = (item.findtext("pubDate") or "").strip()
+            desc = html.unescape(re.sub(r"<[^>]+>", " ", item.findtext("description") or "")).strip()
+            # RFC2822 时间解析并统一到北京时间
+            try:
+                dt = _email_utils.parsedate_to_datetime(pub).astimezone(CN_TZ) if pub else None
+            except Exception:
+                dt = None
+            if not title:
+                continue
+            items.append({"title": title, "url": link, "time": dt,
+                          "summary": desc[:120], "source": source_name})
+            if len(items) >= fetch_cap:
+                break
+    # 按该源独立的时间窗口策略过滤（今天 → 昨天 → 空），再截断到展示上限
+    items = filter_by_time_rule(items, time_rule, source_name)[:limit]
     print(f"  [RSS] {source_name}: {len(items)} 条")
-    # 三级回退过滤：当天 → 最近24小时 → 首页全部
-    if today_only:
-        from datetime import timedelta
-        now_cn = datetime.now(CN_TZ)
-        # 第一级：北京时间当天
-        today_items = [it for it in items if it["time"] is not None and is_today(it["time"])]
-        if today_items:
-            items = today_items
-        else:
-            # 第二级：最近24小时
-            cutoff = now_cn - timedelta(hours=24)
-            recent = [it for it in items if it["time"] is not None and it["time"] >= cutoff]
-            if recent:
-                items = recent
-                print(f"  [RSS] {source_name}: 当日为空，取最近24小时 {len(items)} 条")
-            else:
-                # 第三级：首页全部（含无时间字段的）
-                print(f"  [RSS] {source_name}: 近24小时为空，取首页全部 {len(items)} 条")
     return items
 
 
@@ -688,9 +676,11 @@ def fetch_ph_leaderboard(limit: int = 20) -> List[dict]:
 
 
 def _ph_rss_fallback(limit: int = 20) -> List[dict]:
-    """PH 数据降级方案：从官方 RSS feed 取最新产品（非榜单排序，仅作保底）"""
+    """PH 数据降级方案：从官方 RSS feed 取最新产品（非榜单排序，仅作保底）。
+    PH 属榜单类源（realtime），不按今天/昨天过滤"""
     ph_items = dedupe_and_sort(
-        fetch_rss("https://www.producthunt.com/feed", "Product Hunt", 30, today_only=False), limit)
+        fetch_rss("https://www.producthunt.com/feed", "Product Hunt", 30,
+                  time_rule="realtime"), limit)
     for it in ph_items:
         t = it["title"]
         for sep in (": ", " – ", " - "):
@@ -714,11 +704,14 @@ def build_global_data() -> dict:
         if "tagline_en" not in it and it.get("tagline"):
             it["tagline_en"] = it["tagline"]
             it["tagline"] = translate_en2zh(it["tagline"])
-    items = (fetch_rss("https://store.steampowered.com/feeds/newreleases.xml", "Steam 新品", 30)
-             + fetch_rss("http://www.gamelook.com.cn/feed", "GameLook", 30)
-             + fetch_baijing_home(30)
-             + fetch_rss("https://techcrunch.com/feed/", "TechCrunch", 30)
-             + fetch_hn(25))
+    items = (fetch_rss("https://store.steampowered.com/feeds/newreleases.xml", "Steam 新品",
+                       source_rule("Steam 新品", "limit", 20), source_rule("Steam 新品", "time_rule", "today_yesterday"))
+             + fetch_rss("http://www.gamelook.com.cn/feed", "GameLook",
+                         source_rule("GameLook", "limit", 20), source_rule("GameLook", "time_rule", "today_yesterday"))
+             + fetch_baijing_home(source_rule("白鲸出海", "limit", 20))
+             + fetch_rss("https://techcrunch.com/feed/", "TechCrunch",
+                         source_rule("TechCrunch", "limit", 20), source_rule("TechCrunch", "time_rule", "today_yesterday"))
+             + fetch_hn(source_rule("Hacker News", "limit", 25)))
     groups = {"游戏": [], "工具": [], "应用": [], "更多": []}
     seen = set()
     for it in items:
@@ -746,15 +739,15 @@ def build_global_data() -> dict:
 
 # ========================= 热榜类数据源 =========================
 
-def fetch_toutiao_hot() -> List[dict]:
-    """今日头条热榜：官方 hot-board 接口返回 JSON，含 Title/Url/热度"""
+def fetch_toutiao_hot(limit: int = 20) -> List[dict]:
+    """今日头条热榜：官方 hot-board 接口返回 JSON，含 Title/Url/热度（实时榜单，不按日期过滤）"""
     try:
         resp = SESSION.get("https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc",
                            timeout=12)
         resp.raise_for_status()
         data = resp.json().get("data", [])
         items = []
-        for it in data[:20]:
+        for it in data[:limit]:
             items.append({
                 "title": it.get("Title", "").strip(),
                 "url": it.get("Url", ""),
@@ -768,9 +761,10 @@ def fetch_toutiao_hot() -> List[dict]:
         return []
 
 
-def fetch_weibo_hot() -> List[dict]:
+def fetch_weibo_hot(limit: int = 20) -> List[dict]:
     """微博热搜：优先用第三方聚合 API（oioweb / tenapi），失败则回退到
-    weibo.com 访客 Cookie 两步法。本地网络可能拿不到，线上 Actions 通常能成功"""
+    weibo.com 访客 Cookie 两步法。本地网络可能拿不到，线上 Actions 通常能成功。
+    实时榜单，不按日期过滤"""
     # 方案 A：oioweb 聚合 API
     try:
         resp = SESSION.get("https://api.oioweb.cn/api/common/HotList?type=weibo", timeout=10)
@@ -780,7 +774,7 @@ def fetch_weibo_hot() -> List[dict]:
                 items = [{"title": it.get("title", "").strip(),
                           "url": it.get("url", ""),
                           "hot": it.get("hot", it.get("num", "")),
-                          "source": "微博热搜"} for it in data[:20]]
+                          "source": "微博热搜"} for it in data[:limit]]
                 print(f"  [微博热搜] oioweb 源 {len(items)} 条")
                 return items
     except Exception:
@@ -794,7 +788,7 @@ def fetch_weibo_hot() -> List[dict]:
                 items = [{"title": it.get("name", it.get("title", "")).strip(),
                           "url": it.get("url", ""),
                           "hot": it.get("hot", ""),
-                          "source": "微博热搜"} for it in data[:20]]
+                          "source": "微博热搜"} for it in data[:limit]]
                 print(f"  [微博热搜] tenapi 源 {len(items)} 条")
                 return items
     except Exception:
@@ -808,7 +802,7 @@ def fetch_weibo_hot() -> List[dict]:
             items = [{"title": it.get("word", "").strip(),
                       "url": f"https://s.weibo.com/weibo?q=%23{it.get('word', '')}%23",
                       "hot": it.get("num", ""),
-                      "source": "微博热搜"} for it in realtime[:20]]
+                      "source": "微博热搜"} for it in realtime[:limit]]
             print(f"  [微博热搜] weibo 官方源 {len(items)} 条")
             return items
     except Exception as e:
@@ -816,14 +810,14 @@ def fetch_weibo_hot() -> List[dict]:
     return []
 
 
-def fetch_baidu_hot() -> List[dict]:
-    """百度热搜：官方 board API 返回 JSON，嵌套结构 cards[0].content[0].content"""
+def fetch_baidu_hot(limit: int = 20) -> List[dict]:
+    """百度热搜：官方 board API 返回 JSON，嵌套结构 cards[0].content[0].content（实时榜单）"""
     try:
         resp = SESSION.get("https://top.baidu.com/api/board?platform=wise&tab=realtime", timeout=12)
         resp.raise_for_status()
         content = resp.json()["data"]["cards"][0]["content"][0]["content"]
         items = []
-        for it in content[:20]:
+        for it in content[:limit]:
             items.append({
                 "title": it.get("word", "").strip(),
                 "url": it.get("url", ""),
@@ -876,14 +870,15 @@ def fetch_github_trending(limit: int = 25) -> List[dict]:
     return items
 
 
-def fetch_36kr_rss(limit: int = 15) -> List[dict]:
-    """36kr 官方 RSS（www.36kr.com/feed），用内置 ElementTree 解析"""
+def fetch_36kr_rss(limit: int = 20, time_rule: str = "today_yesterday") -> List[dict]:
+    """36kr 官方 RSS（www.36kr.com/feed），用内置 ElementTree 解析。
+    解析时多取条目，再按时间窗口策略（今天→昨天→空）过滤后截断"""
     try:
         resp = SESSION.get("https://www.36kr.com/feed", timeout=15)
         resp.raise_for_status()
         root = ET.fromstring(resp.content)
         items = []
-        for item in root.findall(".//item")[:limit]:
+        for item in root.findall(".//item")[:max(50, limit * 3)]:
             title = (item.findtext("title") or "").strip()
             link = (item.findtext("link") or "").strip()
             desc = re.sub(r"<[^>]+>", "", item.findtext("description") or "").strip()
@@ -895,6 +890,7 @@ def fetch_36kr_rss(limit: int = 15) -> List[dict]:
                 "time": parse_dt(pub) if pub else None,
                 "source": "36kr",
             })
+        items = filter_by_time_rule(items, time_rule, "36kr")[:limit]
         print(f"  [36kr RSS] {len(items)} 条")
         return items
     except Exception as e:
@@ -993,10 +989,11 @@ def _parse_aibot_date(text: str, now: datetime) -> Optional[datetime]:
         return None
 
 
-def fetch_aibot_news(limit: int = 15) -> List[dict]:
+def fetch_aibot_news(limit: int = 20) -> List[dict]:
     """ai-bot.cn 每日 AI 新闻页：页面按 .news-date 日期标签分组（工作日更新），
-    只抓当天分组；当天无更新（如周六、周日）则回退到最近一个有数据的工作日，
-    其他日期一律不取。日期分组在嵌套的 .news-list 中，需递归扁平化处理。"""
+    日期分组在嵌套的 .news-list 中，需递归扁平化处理。
+    时间规则（见 config.SOURCE_RULES）：只抓当天分组；当天没有则抓昨天分组；
+    昨天也没有（如周一、周日运行且周末未更新）则返回空，绝不抓更早分组，防止历史数据爆炸。"""
     try:
         resp = SESSION.get("https://ai-bot.cn/daily-ai-news/", timeout=15)
         resp.raise_for_status()
@@ -1029,38 +1026,29 @@ def fetch_aibot_news(limit: int = 15) -> List[dict]:
 
     _flatten(root)
 
-    # 将流聚合为 [(datetime, [条目元素])]，保持文档倒序
-    groups: List[tuple] = []
-    cur_date: Optional[datetime] = None
-    cur_items: list = []
+    # 将流聚合为 {日期: [条目元素]} 字典，便于按今天/昨天精确选取
+    groups: Dict[str, list] = {}
+    cur_key: Optional[str] = None
     for kind, payload in stream:
         if kind == "date":
-            if cur_date is not None:
-                groups.append((cur_date, cur_items))
             cur_date = _parse_aibot_date(payload, NOW)
-            cur_items = []
-        elif cur_date is not None:
-            cur_items.append(payload)
-    if cur_date is not None:
-        groups.append((cur_date, cur_items))
+            cur_key = cur_date.strftime("%Y-%m-%d") if cur_date else None
+            groups.setdefault(cur_key, [])
+        elif cur_key is not None:
+            groups.setdefault(cur_key, []).append(payload)
 
-    if not groups:
-        print("  [ai-bot 新闻] 未解析到任何日期分组")
-        return []
-
-    today = NOW.replace(hour=0, minute=0, second=0, microsecond=0)
-    # 优先匹配当天分组；没有则取文档中第一个不晚于今天的分组（即最近更新日，如周五）
-    target = next((g for g in groups if g[0].date() == today.date()), None)
-    if target is None:
-        target = next((g for g in groups if g[0] <= today), None)
-    if target is None:
-        print("  [ai-bot 新闻] 当天及历史分组均未找到")
-        return []
-
-    target_date, boxes = target
-    # 保护：最近分组距今超过 7 天视为站点长期停更，不展示陈旧数据
-    if (today - target_date).days > 7:
-        print(f"  [ai-bot 新闻] 最新数据为 {target_date:%m月%d日}，已超过 7 天，跳过")
+    today = NOW.astimezone(CN_TZ).date()
+    yesterday = today - timedelta(days=1)
+    # 只在"今天 / 昨天"两个分组里选：今天优先，今天没有才取昨天，其余日期一律不看
+    boxes = groups.get(today.strftime("%Y-%m-%d"))
+    chosen_date = datetime(today.year, today.month, today.day, 12, tzinfo=CN_TZ)
+    if not boxes:
+        boxes = groups.get(yesterday.strftime("%Y-%m-%d"))
+        chosen_date = datetime(yesterday.year, yesterday.month, yesterday.day, 12, tzinfo=CN_TZ)
+        if boxes:
+            print(f"  [ai-bot 新闻] 当天无更新，展示前一天（{yesterday:%m月%d日}）数据")
+    if not boxes:
+        print("  [ai-bot 新闻] 今天与昨天均无分组，模块为空")
         return []
 
     items: List[dict] = []
@@ -1085,44 +1073,54 @@ def fetch_aibot_news(limit: int = 15) -> List[dict]:
             "url": href,
             "summary": summary,
             "source": "ai-bot",
-            "time": target_date,
+            "time": chosen_date,
         })
-    print(f"  [ai-bot 新闻] {target_date:%m月%d日} 分组 {len(items)} 条")
+    print(f"  [ai-bot 新闻] {chosen_date:%m月%d日} 分组 {len(items)} 条")
     return items
 
 
 
 def build_hotboard_data(market_headlines: dict = None) -> dict:
     """收集今日热榜页数据：社会舆情（头条/微博/财经要点）、科技动态（36kr/量子位/ai-bot）、
-    游戏与产品（GameLook/PH/GitHub Trending），按板块分组返回"""
-    # 社会舆情板块：头条 + 微博 + 百度 + 财经要点（国内+海外合并，按评分排序）
+    游戏与产品（GameLook/PH/GitHub Trending），按板块分组返回。
+    每个源的时间策略与条数统一从 config.SOURCE_RULES 读取，互不影响"""
+    # 社会舆情板块：头条 + 微博 + 百度（均为实时榜单）+ 财经要点（今天/昨天规则）
     social = {
-        "今日头条": fetch_toutiao_hot(),
-        "微博热搜": fetch_weibo_hot(),
-        "百度热搜": fetch_baidu_hot(),
+        "今日头条": fetch_toutiao_hot(source_rule("今日头条", "limit", 20)),
+        "微博热搜": fetch_weibo_hot(source_rule("微博热搜", "limit", 20)),
+        "百度热搜": fetch_baidu_hot(source_rule("百度热搜", "limit", 20)),
     }
     if market_headlines:
         headlines = (market_headlines.get("domestic") or []) + (market_headlines.get("global") or [])
         headlines.sort(key=lambda t: (t.get("score", 0), t.get("time")), reverse=True)
-        # 统一格式为热榜条目
-        social["财经要点"] = [{
+        # 统一格式为热榜条目（保留 time 字段以支持按今天/昨天规则过滤）
+        raw_briefs = [{
             "title": (it.get("title") or it.get("content", "")[:60]).strip(),
             "url": it.get("url", ""),
             "summary": (it.get("content") or "")[:80],
+            "time": it.get("time"),
             "source": "财经要点",
-        } for it in headlines[:20]]
+        } for it in headlines]
+        social["财经要点"] = filter_by_time_rule(
+            raw_briefs, source_rule("财经要点", "time_rule", "today_yesterday"), "财经要点"
+        )[:source_rule("财经要点", "limit", 20)]
     # 科技动态板块
     tech = {
-        "36kr": fetch_36kr_rss(20),
-        "量子位": fetch_rss("https://www.qbitai.com/feed", "量子位", 20),
-        "ai-bot": fetch_aibot_news(20),
-        "白鲸出海": fetch_baijing_home(20),
+        "36kr": fetch_36kr_rss(source_rule("36kr", "limit", 20),
+                               source_rule("36kr", "time_rule", "today_yesterday")),
+        "量子位": fetch_rss("https://www.qbitai.com/feed", "量子位",
+                           source_rule("量子位", "limit", 20),
+                           source_rule("量子位", "time_rule", "today_yesterday")),
+        "ai-bot": fetch_aibot_news(source_rule("ai-bot", "limit", 20)),
+        "白鲸出海": fetch_baijing_home(source_rule("白鲸出海", "limit", 20)),
     }
     # 游戏与产品板块
     gaming = {
-        "GameLook": fetch_rss("http://www.gamelook.com.cn/feed", "GameLook", 20),
+        "GameLook": fetch_rss("http://www.gamelook.com.cn/feed", "GameLook",
+                              source_rule("GameLook", "limit", 20),
+                              source_rule("GameLook", "time_rule", "today_yesterday")),
         "Product Hunt": build_global_data()["PH精选"],
-        "GitHub Trending": fetch_github_trending(25),
+        "GitHub Trending": fetch_github_trending(source_rule("GitHub Trending", "limit", 25)),
     }
     print("  [热榜] 社会舆情:" + " ".join(f"{k}{len(v)}" for k, v in social.items())
           + " | 科技:" + " ".join(f"{k}{len(v)}" for k, v in tech.items())

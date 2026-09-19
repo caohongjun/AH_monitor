@@ -126,6 +126,39 @@ NAV_ITEMS = [
     ("finance.html", "📈", "财经与股市"),
 ]
 
+# ============================ 信息源采集规则（每个源独立配置） ============================
+# 各源刷新频率不同，时间策略与条数各自独立，不使用统一规则。
+#   time_rule:
+#     "today_yesterday" — 仅爬北京时间当天数据；当天无更新则回退爬前一天；
+#                         昨天仍无数据则该模块为空（不展示），绝不爬更早数据，防止历史数据爆炸
+#     "realtime"        — 实时榜单/热榜快照（页面本身即"当前"内容），不按日期过滤
+#   limit: 过滤后每个模块最多展示条数（超出部分在卡片内部滚动）
+SOURCE_RULES = {
+    # —— 今日热榜 · 社会舆情 ——
+    "今日头条":       {"time_rule": "realtime", "limit": 20},
+    "微博热搜":       {"time_rule": "realtime", "limit": 20},
+    "百度热搜":       {"time_rule": "realtime", "limit": 20},
+    "财经要点":       {"time_rule": "today_yesterday", "limit": 20},
+    # —— 今日热榜 · 科技动态 ——
+    "36kr":          {"time_rule": "today_yesterday", "limit": 20},
+    "量子位":         {"time_rule": "today_yesterday", "limit": 20},
+    "ai-bot":        {"time_rule": "today_yesterday", "limit": 20},
+    "白鲸出海":       {"time_rule": "today_yesterday", "limit": 20},
+    # —— 今日热榜 · 游戏与产品 ——
+    "GameLook":      {"time_rule": "today_yesterday", "limit": 20},
+    "Product Hunt":  {"time_rule": "realtime", "limit": 20},   # PH 每日榜单固定展示昨日榜
+    "GitHub Trending": {"time_rule": "realtime", "limit": 25},
+    # —— 海外产品页（global）——
+    "Steam 新品":     {"time_rule": "today_yesterday", "limit": 20},
+    "TechCrunch":    {"time_rule": "today_yesterday", "limit": 20},
+    "Hacker News":   {"time_rule": "realtime", "limit": 25},
+}
+
+
+def source_rule(source_name: str, key: str, default):
+    """读取单个信息源的采集规则配置；未配置的源返回默认值"""
+    return SOURCE_RULES.get(source_name, {}).get(key, default)
+
 WATCHLIST = [
     {"name": "招商银行", "tcode": "sh600036", "display": "600036.SH", "match": "600036",
      "aliases": ["招商银行", "招行"]},
