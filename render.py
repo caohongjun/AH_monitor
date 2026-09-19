@@ -643,6 +643,14 @@ def _info_page_shell(title: str, icon: str, active: str, subtitle: str,
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{title}</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<style>
+  /* 模块内部滚动区域：深色细滚动条 */
+  .scroll-thin::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+  .scroll-thin::-webkit-scrollbar-track {{ background: transparent; }}
+  .scroll-thin::-webkit-scrollbar-thumb {{ background: #334155; border-radius: 3px; }}
+  .scroll-thin::-webkit-scrollbar-thumb:hover {{ background: #475569; }}
+  .scroll-thin {{ scrollbar-width: thin; scrollbar-color: #334155 transparent; }}
+</style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
 <div class="max-w-[1600px] mx-auto px-4 sm:px-6 py-6">
@@ -723,7 +731,7 @@ def render_global_page(groups: dict) -> str:
       <h2 class="text-base font-bold text-slate-100">{name}</h2>
       <span class="text-xs text-slate-500">{hint}</span>
     </div>
-    <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-4">{rows}</div>
+    <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-4 max-h-[520px] overflow-y-auto scroll-thin pr-2">{rows}</div>
   </section>
 """
     return _info_page_shell("海外产品资讯", "🌏", "global.html",
@@ -749,14 +757,15 @@ _SOURCE_FAVICON = {
 }
 
 
-def _hot_module(source_name: str, items: List[dict], max_items: int = 8) -> str:
-    """渲染单个信息源模块：标题行（favicon+名称 | 更新时间）+ 编号列表（标题+描述）"""
+def _hot_module(source_name: str, items: List[dict]) -> str:
+    """渲染单个信息源模块：标题行（favicon+名称+条数 | 更新时间）+ 编号列表。
+    模块整体固定等高，列表展示该源抓取到的全部条目，超出高度时在列表内部滚动"""
     domain = _SOURCE_FAVICON.get(source_name, "")
     icon_html = (f'<img src="https://favicon.im/{domain}" '
                  f'class="w-5 h-5 rounded object-contain" onerror="this.style.display=\'none\'" alt="">')
     update_time = NOW.strftime("%m月%d日 %H:%M")
     rows = []
-    for idx, it in enumerate(items[:max_items], 1):
+    for idx, it in enumerate(items, 1):
         title = html.escape(it.get("title", ""))
         url = it.get("url", "#")
         if not url.startswith(("http://", "https://")):
@@ -784,15 +793,16 @@ def _hot_module(source_name: str, items: List[dict], max_items: int = 8) -> str:
           </a>""")
     body = "\n".join(rows) if rows else '<div class="text-xs text-slate-600 py-6 text-center">暂无数据</div>'
     return f"""
-    <div class="bg-slate-900/60 border border-slate-800 rounded-xl p-4 flex flex-col">
-      <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800/60">
+    <div class="bg-slate-900/60 border border-slate-800 rounded-xl p-4 flex flex-col h-[540px]">
+      <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800/60 shrink-0">
         <div class="flex items-center gap-2">
           {icon_html}
           <span class="text-sm font-bold text-slate-100">{source_name}</span>
+          <span class="text-[10px] text-slate-500 bg-slate-800/70 rounded px-1.5 py-0.5">{len(items)} 条</span>
         </div>
         <span class="text-[11px] text-slate-500">{update_time}</span>
       </div>
-      <div class="flex-1">{body}</div>
+      <div class="flex-1 min-h-0 overflow-y-auto scroll-thin pr-1">{body}</div>
     </div>"""
 
 

@@ -19,7 +19,8 @@ from config import (CN_TZ, NOW, TODAY, TODAY_START, MAX_EVENTS, OUTPUT_HTML,
                     GLOBAL_TAG_RULES, AI_CORE, AI_PRODUCT_VERBS)
 from utils import (SESSION, http_get, log, strip_html, parse_dt, ts_to_dt,
                    ms_to_dt, is_today, norm_title, dedupe_and_sort,
-                   is_ai_item, is_ai_product, zh_tags)
+                   is_ai_item, is_ai_product, zh_tags,
+                   parse_sina_stocks, parse_em_stock_list)
 
 
 # ============================ 数据源 1：新浪财经 7x24 ============================
@@ -559,7 +560,7 @@ def _parse_ph_from_text(text: str) -> List[dict]:
     return results
 
 
-def fetch_ph_leaderboard(limit: int = 10) -> List[dict]:
+def fetch_ph_leaderboard(limit: int = 20) -> List[dict]:
     """抓取 Product Hunt 昨日每日榜单（按投票数排序）。
     用 Playwright 无头浏览器渲染 leaderboard 页面并提取产品名 / tagline / 投票数；
     若 Playwright 不可用或抓取失败，回退到官方 RSS feed（数据非榜单，仅作降级）。"""
@@ -686,10 +687,10 @@ def fetch_ph_leaderboard(limit: int = 10) -> List[dict]:
     return items
 
 
-def _ph_rss_fallback(limit: int = 10) -> List[dict]:
+def _ph_rss_fallback(limit: int = 20) -> List[dict]:
     """PH 数据降级方案：从官方 RSS feed 取最新产品（非榜单排序，仅作保底）"""
     ph_items = dedupe_and_sort(
-        fetch_rss("https://www.producthunt.com/feed", "Product Hunt", 15, today_only=False), limit)
+        fetch_rss("https://www.producthunt.com/feed", "Product Hunt", 30, today_only=False), limit)
     for it in ph_items:
         t = it["title"]
         for sep in (": ", " – ", " - "):
@@ -707,7 +708,7 @@ def _ph_rss_fallback(limit: int = 10) -> List[dict]:
 def build_global_data() -> dict:
     """收集海外产品页数据：PH 独立成栏；Steam/GameLook 归游戏类；白鲸/HN/TechCrunch 按规则分类"""
     # PH 榜单：用 Playwright 抓取昨日每日榜单，失败时回退 RSS
-    ph_items = fetch_ph_leaderboard(10)
+    ph_items = fetch_ph_leaderboard(20)
     # 翻译 tagline 为中文（Playwright 路径也需翻译；RSS 回退路径已在 _ph_rss_fallback 内处理）
     for it in ph_items:
         if "tagline_en" not in it and it.get("tagline"):
@@ -737,7 +738,7 @@ def build_global_data() -> dict:
         else:
             groups["更多"].append(it)
     for name in groups:
-        groups[name] = dedupe_and_sort(groups[name], 10)
+        groups[name] = dedupe_and_sort(groups[name], 20)
     groups["PH精选"] = ph_items  # Product Hunt 独立栏（不参与其余分类）
     print("  [海外] " + " / ".join(f"{k} {len(v)}" for k, v in groups.items()))
     return groups
@@ -836,7 +837,7 @@ def fetch_baidu_hot() -> List[dict]:
         return []
 
 
-def fetch_github_trending() -> List[dict]:
+def fetch_github_trending(limit: int = 25) -> List[dict]:
     """GitHub Trending：爬取 trending 页面，提取仓库名/描述/今日 star 数。
     带 3 次重试，应对网络抖动；选择器做了兼容以适配 GitHub 页面结构变更。"""
     for attempt in range(3):
@@ -852,7 +853,7 @@ def fetch_github_trending() -> List[dict]:
             return []
     soup = BeautifulSoup(resp.text, "html.parser")
     items = []
-    for article in soup.select("article.Box-row")[:15]:
+    for article in soup.select("article.Box-row")[:limit]:
         h2 = article.select_one("h2 a")
         if not h2:
             continue
@@ -918,7 +919,7 @@ def _parse_baijing_reltime(text: str) -> Optional[datetime]:
     return None
 
 
-def fetch_baijing_home(limit: int = 12, max_pages: int = 3) -> List[dict]:
+def fetch_baijing_home(limit: int = 20, max_pages: int = 3) -> List[dict]:
     """白鲸出海首页文章：调用首页同款 AJAX 接口（POST /index/ajax/get_article/，
     参数 pn 为页码），接口返回的 add_time 是相对时间。
     只保留当天文章；当天没有更新（如周末）则回退前一天，其余日期不取。
@@ -1109,19 +1110,19 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
             "url": it.get("url", ""),
             "summary": (it.get("content") or "")[:80],
             "source": "财经要点",
-        } for it in headlines[:10]]
+        } for it in headlines[:20]]
     # 科技动态板块
     tech = {
-        "36kr": fetch_36kr_rss(12),
-        "量子位": fetch_rss("https://www.qbitai.com/feed", "量子位", 12),
-        "ai-bot": fetch_aibot_news(12),
-        "白鲸出海": fetch_baijing_home(12),
+        "36kr": fetch_36kr_rss(20),
+        "量子位": fetch_rss("https://www.qbitai.com/feed", "量子位", 20),
+        "ai-bot": fetch_aibot_news(20),
+        "白鲸出海": fetch_baijing_home(20),
     }
     # 游戏与产品板块
     gaming = {
-        "GameLook": fetch_rss("http://www.gamelook.com.cn/feed", "GameLook", 12),
+        "GameLook": fetch_rss("http://www.gamelook.com.cn/feed", "GameLook", 20),
         "Product Hunt": build_global_data()["PH精选"],
-        "GitHub Trending": fetch_github_trending(),
+        "GitHub Trending": fetch_github_trending(25),
     }
     print("  [热榜] 社会舆情:" + " ".join(f"{k}{len(v)}" for k, v in social.items())
           + " | 科技:" + " ".join(f"{k}{len(v)}" for k, v in tech.items())

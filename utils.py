@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """utils.py — 基础工具层：会话 / 日志 / 时间转换 / 文本处理 / 通用筛选"""
+import json
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -119,3 +120,74 @@ def dedupe_and_sort(items: List[dict], limit: int) -> List[dict]:
         if len(out) >= limit:
             break
     return out
+
+
+# ============================ 股票代码结构化解析 ============================
+
+def classify_a_share(code: str, suffix_hint: str = "") -> Optional[dict]:
+    """把 6 位 A 股代码归类到 sh/sz/bj 并返回标准化结构；非股票号段返回 None"""
+    suffix = suffix_hint.upper()
+    if suffix in ("SH", "SZ", "BJ"):
+        market = suffix
+    elif code.startswith(("60", "68", "90")):
+        market = "SH"
+    elif code.startswith(("00", "30", "20")):
+        market = "SZ"
+    elif code.startswith(("43", "83", "87", "92")):
+        market = "BJ"
+    else:
+        return None
+    return {
+        "market": "A股",
+        "code": code,
+        "display": f"{code}.{market}",
+        "tcode": f"{market.lower()}{code}",
+    }
+
+
+def parse_sina_stocks(ext_raw: Optional[str]) -> List[dict]:
+    """解析新浪 7x24 的 ext.stocks 字段（JSON 字符串），只取 A 股与港股个股"""
+    if not ext_raw:
+        return []
+    try:
+        ext = json.loads(ext_raw)
+    except (ValueError, TypeError):
+        return []
+    stocks: List[dict] = []
+    for item in ext.get("stocks", []):
+        market, symbol = item.get("market", ""), item.get("symbol", "")
+        if market == "hk" and re.fullmatch(r"\d{1,5}", symbol):
+            code = symbol.zfill(5)
+            stocks.append({"market": "港股", "code": code,
+                           "display": f"{code}.HK", "tcode": f"hk{code}"})
+        elif market == "cn":
+            # symbol 形如 sh688836 / sz300024；si/sih 开头的是概念指数，忽略
+            m = re.fullmatch(r"(sh|sz|bj)(\d{6})", symbol)
+            if m:
+                mapped = classify_a_share(m.group(2), m.group(1).upper())
+                if mapped:
+                    stocks.append(mapped)
+    return stocks
+
+
+def parse_em_stock_list(stock_list: Optional[List[str]]) -> List[dict]:
+    """解析东财快讯 stockList（"市场号.代码"）；实测 1=沪 0=深/北 116=港股，其余为美股/板块/基金"""
+    stocks: List[dict] = []
+    for entry in stock_list or []:
+        if "." not in entry:
+            continue
+        market_id, code = entry.split(".", 1)
+        if market_id == "116" and re.fullmatch(r"\d{1,5}", code):
+            code = code.zfill(5)
+            stocks.append({"market": "港股", "code": code,
+                           "display": f"{code}.HK", "tcode": f"hk{code}"})
+        elif market_id == "1" and re.fullmatch(r"\d{6}", code):
+            mapped = classify_a_share(code, "SH")
+            if mapped:
+                stocks.append(mapped)
+        elif market_id == "0" and re.fullmatch(r"\d{6}", code):
+            mapped = classify_a_share(code)  # 60/00/30 归沪深，43/83/87/92 归北交所
+            if mapped:
+                stocks.append(mapped)
+        # 105/106/153 美股、90/1007 板块、150 港股ETF、999 指数等均不在 A/港股个股范围
+    return stocks
