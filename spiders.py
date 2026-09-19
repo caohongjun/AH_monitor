@@ -837,33 +837,42 @@ def fetch_baidu_hot() -> List[dict]:
 
 
 def fetch_github_trending() -> List[dict]:
-    """GitHub Trending：爬取 trending 页面，提取仓库名/描述/今日 star 数"""
-    try:
-        resp = SESSION.get("https://github.com/trending", timeout=30)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        items = []
-        for article in soup.select("article.Box-row")[:15]:
-            h2 = article.select_one("h2 a")
-            if not h2:
+    """GitHub Trending：爬取 trending 页面，提取仓库名/描述/今日 star 数。
+    带 3 次重试，应对网络抖动；选择器做了兼容以适配 GitHub 页面结构变更。"""
+    for attempt in range(3):
+        try:
+            resp = SESSION.get("https://github.com/trending", timeout=40)
+            resp.raise_for_status()
+            break
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
                 continue
-            name = h2.get_text(strip=True).replace("\n", "").replace(" ", "")
-            desc_tag = article.select_one("p")
-            desc = desc_tag.get_text(strip=True) if desc_tag else ""
-            star_tag = article.select_one("span.d-inline-block.float-sm-right")
-            stars_today = star_tag.get_text(strip=True) if star_tag else ""
-            items.append({
-                "title": name,
-                "url": f"https://github.com/{name}",
-                "summary": desc,
-                "hot": stars_today,
-                "source": "GitHub Trending",
-            })
-        print(f"  [GitHub Trending] {len(items)} 条")
-        return items
-    except Exception as e:
-        print(f"  [GitHub Trending] 抓取失败: {e}")
-        return []
+            print(f"  [GitHub Trending] 抓取失败(重试3次): {e}")
+            return []
+    soup = BeautifulSoup(resp.text, "html.parser")
+    items = []
+    for article in soup.select("article.Box-row")[:15]:
+        h2 = article.select_one("h2 a")
+        if not h2:
+            continue
+        # 仓库名格式 "owner / repo"，去掉空白和斜杠周围空格
+        name = h2.get_text(strip=True).replace("\n", "").replace(" ", "")
+        desc_tag = article.select_one("p")
+        desc = desc_tag.get_text(strip=True) if desc_tag else ""
+        # 今日 star 数：兼容多种 class 写法
+        star_tag = (article.select_one("span.d-inline-block.float-sm-right")
+                    or article.select_one("span.float-sm-right"))
+        stars_today = star_tag.get_text(strip=True) if star_tag else ""
+        items.append({
+            "title": name,
+            "url": f"https://github.com/{name}",
+            "summary": desc,
+            "hot": stars_today,
+            "source": "GitHub Trending",
+        })
+    print(f"  [GitHub Trending] {len(items)} 条")
+    return items
 
 
 def fetch_36kr_rss(limit: int = 15) -> List[dict]:
