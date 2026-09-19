@@ -786,9 +786,20 @@ def _info_page_shell(title: str, icon: str, active: str, subtitle: str,
 <body class="bg-slate-950 text-slate-100 min-h-screen">
 <div class="max-w-[1600px] mx-auto px-4 sm:px-6 py-6">
 
-  <header class="mb-4">
-    <h1 class="text-xl sm:text-2xl font-bold text-slate-50">{icon} {title}</h1>
-    <div class="text-xs text-slate-500 mt-1">{subtitle}</div>
+  <!-- 页头（与财经页同构：左侧标题+副标题，右侧数据更新时间，保证两页标题区等高） -->
+  <header class="border-b border-slate-800 pb-5 mb-6">
+    <div class="flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <h1 class="text-xl sm:text-2xl font-bold tracking-tight">
+          <span class="text-amber-400">{icon} {title}</span>
+        </h1>
+        <p class="text-xs text-slate-500 mt-1.5">{subtitle}</p>
+      </div>
+      <div class="text-right text-xs text-slate-500">
+        <div>数据更新时间</div>
+        <div class="font-mono text-sm text-slate-300 mt-0.5">{build_time} <span class="text-slate-600">UTC+8</span></div>
+      </div>
+    </div>
   </header>
 
   {render_nav(active)}
@@ -796,7 +807,7 @@ def _info_page_shell(title: str, icon: str, active: str, subtitle: str,
 {sections}
 
   <footer class="mt-10 pt-5 border-t border-slate-800/60 flex flex-wrap justify-between gap-3 text-xs text-slate-600">
-    <div>数据更新时间 {build_time} <span class="text-slate-700">UTC+8</span> · 自动构建于 GitHub Actions</div>
+    <div>自动构建于 GitHub Actions（每日北京时间 09:30 / 18:00）</div>
     <div><a href="index.html" class="hover:text-amber-400">返回舆情监控</a></div>
   </footer>
 </div>
@@ -989,7 +1000,7 @@ def render_hotboard_page(data: dict) -> str:
         + _hot_section("游戏与产品", "🎮", data.get("gaming", {}))
     )
     return _info_page_shell("今日热榜", "🔥", "index.html",
-                            "今日头条 / 微博热搜 / 36kr / 量子位 / ai-bot / GameLook / Product Hunt / GitHub Trending",
+                            "今日头条 / 微博热搜 / 36kr / 量子位 / ai-bot / GameLook / Product Hunt / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
                             sections, NOW.strftime("%Y-%m-%d %H:%M"))
 
 
