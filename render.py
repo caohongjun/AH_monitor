@@ -613,6 +613,12 @@ def _feed_item_html(item: dict) -> str:
         f'<span class="px-1 rounded bg-cyan-500/10 text-cyan-300/80 border border-cyan-500/20 text-[10px]">{html.escape(t)}</span>'
         for t in zh_tags(f"{item['title']} {item.get('tagline', '')} {item['summary']}")
     )
+    # PH 榜单条目显示投票数徽章
+    vote_badge = ""
+    if item.get("votes"):
+        vote_badge = (f'<span class="text-[10px] text-orange-300/90 bg-orange-500/10 border '
+                      f'border-orange-500/20 rounded px-1.5 py-0.5 shrink-0" title="Product Hunt 投票数">'
+                      f'▲ {html.escape(str(item["votes"]))}</span>')
     row = f"""
       <a href="{html.escape(item['url'] if item['url'].startswith(("http://", "https://")) else "#", quote=True)}"
          target="_blank" rel="noopener noreferrer"
@@ -620,7 +626,8 @@ def _feed_item_html(item: dict) -> str:
                 hover:bg-slate-800/40 transition-colors"
          title="{html.escape(item['title'])}">
         <span class="font-mono text-[11px] text-slate-500 shrink-0">{time_str}</span>
-        <span class="text-[13px] text-slate-200 {'truncate flex-1' if not item.get('tagline') else 'flex-1'}">{html.escape(item["title"])}</span>
+        <span class="text-[13px] text-slate-200 flex-1">{html.escape(item["title"])}</span>
+        {vote_badge}
         {tags}
         <span class="text-[10px] text-slate-600 shrink-0">{html.escape(item["source"])}</span>
       </a>"""
@@ -793,11 +800,16 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
         url = it.get("url", "#")
         if not url.startswith(("http://", "https://")):
             url = "#"
-        # 描述：优先 summary / tagline，否则显示热度
-        desc = it.get("summary") or it.get("tagline") or ""
+        # 描述：优先中文 tagline（如 PH 翻译后的标语），其次 summary，否则显示热度
+        desc = it.get("tagline") or it.get("summary") or ""
         hot = it.get("hot", "")
         if not desc and hot:
             desc = f"热度 {hot}"
+        # PH 榜单投票数徽章
+        votes = it.get("votes", "")
+        vote_badge = (f'<span class="text-[10px] text-orange-300/90 bg-orange-500/10 border '
+                      f'border-orange-500/20 rounded px-1.5 py-0.5 shrink-0" title="Product Hunt 投票数">'
+                      f'▲ {html.escape(str(votes))}</span>') if votes else ""
         desc_html = f'<div class="text-xs text-slate-500 mt-0.5 truncate">{html.escape(str(desc)[:80])}</div>' if desc else ""
         hot_badge = f'<span class="text-[10px] text-slate-600 ml-auto shrink-0">{html.escape(str(hot))}</span>' if hot and not desc else ""
         rows.append(f"""
@@ -808,6 +820,7 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-2">
                   <span class="text-[13px] text-slate-200 truncate">{title}</span>
+                  {vote_badge}
                   {hot_badge}
                 </div>
                 {desc_html}

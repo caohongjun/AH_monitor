@@ -7,6 +7,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
+from urllib.parse import quote
 
 import requests
 from bs4 import BeautifulSoup
@@ -506,51 +507,10 @@ def translate_en2zh(text: str) -> str:
         return text
 
 
-def _parse_ph_from_text(text: str) -> List[dict]:
-    """从 PH leaderboard 页面全文本中兜底解析产品数据。
-    按行扫描：遇到 /products/{slug} 链接后，取后续行作为 tagline，遇到 vote 行取投票数。"""
-    if not text:
-        return []
-    results: List[dict] = []
-    seen = set()
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        # 匹配产品链接行
-        m = re.search(r"/products/([a-z0-9-]+)", line)
-        if m and m.group(1) not in seen:
-            slug = m.group(1)
-            seen.add(slug)
-            name = line.split("/")[-1].replace("-", " ").title() if "/" not in line else line
-            # 尝试从当前行提取产品名（去掉 URL 部分）
-            name_clean = re.sub(r"https?://\S+|/\S+", "", line).strip() or slug.replace("-", " ").title()
-            tagline = ""
-            votes = ""
-            # 向后扫描最多 5 行，找 tagline 和投票数
-            for j in range(i + 1, min(i + 6, len(lines))):
-                nxt = lines[j]
-                vm = re.match(r"^([\d,]+)\s*vote", nxt, re.IGNORECASE)
-                if vm:
-                    votes = vm.group(1).replace(",", "")
-                    break
-                if not tagline and len(nxt) > 8 and not re.match(r"^[\d,]+$", nxt) \
-                        and "/products/" not in nxt and len(nxt) < 200:
-                    tagline = nxt
-            results.append({
-                "name": name_clean,
-                "slug": slug,
-                "tagline": tagline,
-                "votes": votes,
-                "url": f"https://www.producthunt.com/products/{slug}",
-            })
-        i += 1
-    return results
-
-
 def fetch_ph_leaderboard(limit: int = 20) -> List[dict]:
-    """抓取 Product Hunt 昨日每日榜单（按投票数排序）。
-    用 Playwright 无头浏览器渲染 leaderboard 页面并提取产品名 / tagline / 投票数；
+    """抓取 Product Hunt 昨日每日榜单（严格按榜单排名，DOM 顺序即名次）。
+    用 Playwright 无头浏览器渲染 leaderboard 页面，只提取主榜单容器内首行带
+    "N. 产品名"排名前缀的 section 卡片（页脚推荐/嵌入文章无排名前缀，天然排除）；
     若 Playwright 不可用或抓取失败，回退到官方 RSS feed（数据非榜单，仅作降级）。"""
     yesterday = datetime.now(CN_TZ) - timedelta(days=1)
     url = (f"https://www.producthunt.com/leaderboard/daily/"
@@ -584,91 +544,70 @@ def fetch_ph_leaderboard(limit: int = 20) -> List[dict]:
             else:
                 raise RuntimeError("页面未在预期时间内渲染完成或被 Cloudflare 拦截")
 
-            # 在浏览器端提取榜单数据：遍历所有指向 /products/ 的链接，
-            # 向上找最近的列表项容器，从中读取产品名、tagline、投票数
+            # 在浏览器端提取主榜单：榜单产品均为 <section> 卡片且首行形如 "1. 产品名"，
+            # 同属一个列表容器（div.flex.grow.flex-col）。页脚推荐/嵌入文章中的产品
+            # 没有排名前缀，按"排名卡片最多的父容器"分组即可精确锁定主榜单，
+            # DOM 顺序即榜单排名（不要再按票数重排，票数接近时会排错）
             data = page.evaluate(r"""() => {
-                const results = [];
-                const seen = new Set();
-                const links = document.querySelectorAll('a[href*="/products/"]');
-                links.forEach(a => {
-                    const href = a.getAttribute('href') || '';
-                    const m = href.match(/\/products\/([a-z0-9-]+)/);
-                    if (!m) return;
-                    const slug = m[1];
-                    if (seen.has(slug)) return;
-                    // 向上找包含投票数的祖先容器（限制大小，避免取到整个页面）
-                    let container = null;
-                    let el = a;
-                    for (let i = 0; i < 6 && el.parentElement; i++) {
-                        el = el.parentElement;
-                        const txt = el.innerText || '';
-                        // 容器文本在 30~400 字之间，且包含 vote 关键字，认为是产品卡片
-                        if (txt.length > 30 && txt.length < 400 && /vote/i.test(txt)) {
-                            container = el;
-                            break;
-                        }
-                    }
-                    if (!container) container = a.parentElement?.parentElement;
-                    if (!container) return;
-                    const text = container.innerText || '';
-                    const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
-                    // 产品名：取链接文本
-                    const name = (a.innerText || a.textContent || '').trim();
-                    // tagline：容器内非产品名、非纯数字、非 vote 的第一行长文本
-                    let tagline = '';
-                    for (const line of lines) {
-                        if (line !== name && line.length > 8 && !/^\d+$/.test(line)
-                            && !/^[\d,]+\s*vote/i.test(line) && line.length < 200) {
-                            tagline = line;
-                            break;
-                        }
-                    }
-                    // 投票数：匹配 "数字 vote" 格式
-                    const voteMatch = text.match(/([\d,]+)\s*vote/i);
-                    const votes = voteMatch ? voteMatch[1].replace(/,/g, '') : '';
-                    results.push({
-                        name: name || slug,
-                        slug: slug,
-                        tagline: tagline,
-                        votes: votes,
-                        url: 'https://www.producthunt.com/products/' + slug,
-                    });
-                    seen.add(slug);
+                const sections = Array.from(document.querySelectorAll('section'));
+                const firstLine = s => ((s.innerText || '').split('\n')[0] || '').trim();
+                const isRank = s => /^\d+\.\s+\S/.test(firstLine(s));
+                const groups = {};
+                sections.forEach(s => {
+                    if (!isRank(s)) return;
+                    const p = s.parentElement;
+                    const key = (p && p.tagName) ? (p.tagName + '|' + (typeof p.className === 'string' ? p.className : '')) : 'none';
+                    (groups[key] = groups[key] || {list: []}).list.push(s);
                 });
-                return results;
+                let best = null;
+                Object.values(groups).forEach(g => { if (!best || g.list.length > best.list.length) best = g; });
+                if (!best) return [];
+                return best.list.map(s => {
+                    const lines = (s.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
+                    const mm = (lines[0] || '').match(/^(\d+)\.\s*(.*)$/);
+                    // 卡片末尾两个独立数字：投票数、评论数
+                    const trailingNums = [];
+                    for (let i = lines.length - 1; i >= 1; i--) {
+                        if (/^\d[\d,]*$/.test(lines[i])) trailingNums.unshift(lines[i]);
+                        else if (trailingNums.length) break;
+                    }
+                    const a = s.querySelector('a[href*="/products/"], a[href*="/posts/"]');
+                    let href = a ? a.getAttribute('href') : '';
+                    if (href && href.startsWith('/')) href = 'https://www.producthunt.com' + href;
+                    return {
+                        rank: mm ? +mm[1] : 0,
+                        name: mm ? mm[2].trim() : lines[0],
+                        tagline: lines[1] || '',
+                        votes: trailingNums[0] || '',
+                        comments: trailingNums[1] || '',
+                        url: href,
+                    };
+                }).filter(x => x.name);
             }""")
 
+            # 主榜单提取为空（页面结构变更或渲染异常）：直接放弃，外层回退 RSS
+            browser.close()
             if not data:
-                # 兜底：从页面全文本中正则解析产品行（产品链接 + 投票数）
-                full_text = page.inner_text("body")
-                browser.close()
-                data = _parse_ph_from_text(full_text)
-            else:
-                browser.close()
+                raise RuntimeError("页面解析未提取到主榜单数据")
 
-            if not data:
-                raise RuntimeError("页面解析未提取到产品数据")
-
-            print(f"  [PH榜单] 原始提取 {len(data)} 条，样例: "
-                  + str(data[:3])[:200])
-
-            # 按投票数排序（榜单顺序），取前 limit 条
-            def _vote_int(x):
-                try:
-                    return int(x.get("votes") or 0)
-                except (ValueError, TypeError):
-                    return 0
-            data.sort(key=_vote_int, reverse=True)
+            # 过滤异常排名并按榜单排名升序（DOM 顺序），取前 limit 条
+            data = [d for d in data if isinstance(d.get("rank"), int) and d["rank"] >= 1]
+            data.sort(key=lambda d: d["rank"])
+            print(f"  [PH榜单] 主榜单提取 {len(data)} 条，榜首: "
+                  f"{data[0].get('name')}（{data[0].get('votes')} 票）")
             for d in data[:limit]:
+                tagline_en = d.get("tagline") or ""
                 items.append({
                     "title": d["name"],
                     "url": d["url"],
-                    "tagline": d["tagline"],
-                    "summary": d["tagline"],
+                    "tagline": translate_en2zh(tagline_en),
+                    "tagline_en": tagline_en,
+                    "summary": tagline_en,
+                    "votes": d.get("votes", ""),
                     "source": "Product Hunt",
                     "time": yesterday,
                 })
-            print(f"  [PH榜单] Playwright 抓取 {len(items)} 条（昨日 {yesterday.strftime('%Y-%m-%d')}）")
+            print(f"  [PH榜单] Playwright 抓取 {len(items)} 条（昨日 {yesterday.strftime('%Y-%m-%d')} 榜单）")
     except Exception as exc:
         print(f"  [PH榜单] Playwright 抓取失败: {exc}，回退 RSS feed")
         return _ph_rss_fallback(limit)
@@ -762,24 +701,54 @@ def fetch_toutiao_hot(limit: int = 20) -> List[dict]:
 
 
 def fetch_weibo_hot(limit: int = 20) -> List[dict]:
-    """微博热搜：优先用第三方聚合 API（oioweb / tenapi），失败则回退到
-    weibo.com 访客 Cookie 两步法。本地网络可能拿不到，线上 Actions 通常能成功。
-    实时榜单，不按日期过滤"""
-    # 方案 A：oioweb 聚合 API
+    """微博热搜：优先用 weibo.com 官方访客接口（必须先访问首页拿访客 Cookie，
+    且 ajax 请求必须带 Referer，否则返回 403 Forbidden）；
+    失败再回退第三方聚合 API（oioweb / tenapi）。实时榜单，不按日期过滤"""
+    # 方案 A：weibo.com 官方访客接口（2026-09 验证：不带 Referer 必 403，带后返回 50+ 条）
     try:
-        resp = SESSION.get("https://api.oioweb.cn/api/common/HotList?type=weibo", timeout=10)
+        SESSION.get("https://weibo.com/", timeout=8)
+        resp = SESSION.get("https://weibo.com/ajax/side/hotSearch", timeout=10,
+                           headers={"Referer": "https://weibo.com/",
+                                    "X-Requested-With": "XMLHttpRequest",
+                                    "Accept": "application/json"})
+        if resp.status_code == 200 and resp.text.strip().startswith("{"):
+            realtime = resp.json().get("data", {}).get("realtime", [])
+            items = []
+            for it in realtime:
+                word = (it.get("word") or "").strip()
+                if not word:
+                    continue
+                items.append({
+                    "title": word,
+                    "url": "https://s.weibo.com/weibo?q=%23" + quote(word) + "%23",
+                    "hot": it.get("num", ""),
+                    "source": "微博热搜",
+                })
+                if len(items) >= limit:
+                    break
+            if items:
+                print(f"  [微博热搜] weibo 官方源 {len(items)} 条")
+                return items
+    except Exception as e:
+        print(f"  [微博热搜] 官方源失败: {str(e)[:100]}")
+    # 方案 B：oioweb 聚合 API（部分网络环境存在证书拦截，关闭校验兜底）
+    try:
+        resp = SESSION.get("https://api.oioweb.cn/api/common/HotList?type=weibo",
+                           timeout=10, verify=False)
         if resp.status_code == 200 and resp.text.strip().startswith("{"):
             data = resp.json().get("data", [])
             if isinstance(data, list) and data:
                 items = [{"title": it.get("title", "").strip(),
                           "url": it.get("url", ""),
                           "hot": it.get("hot", it.get("num", "")),
-                          "source": "微博热搜"} for it in data[:limit]]
-                print(f"  [微博热搜] oioweb 源 {len(items)} 条")
-                return items
+                          "source": "微博热搜"} for it in data[:limit]
+                         if it.get("title")]
+                if items:
+                    print(f"  [微博热搜] oioweb 源 {len(items)} 条")
+                    return items
     except Exception:
         pass
-    # 方案 B：tenapi
+    # 方案 C：tenapi
     try:
         resp = SESSION.get("https://tenapi.cn/v2/weibohot", timeout=10)
         if resp.status_code == 200 and resp.text.strip().startswith("{"):
@@ -788,25 +757,13 @@ def fetch_weibo_hot(limit: int = 20) -> List[dict]:
                 items = [{"title": it.get("name", it.get("title", "")).strip(),
                           "url": it.get("url", ""),
                           "hot": it.get("hot", ""),
-                          "source": "微博热搜"} for it in data[:limit]]
-                print(f"  [微博热搜] tenapi 源 {len(items)} 条")
-                return items
-    except Exception:
-        pass
-    # 方案 C：weibo.com 访客 Cookie 两步法
-    try:
-        SESSION.get("https://weibo.com/", timeout=8)
-        resp = SESSION.get("https://weibo.com/ajax/side/hotSearch", timeout=10)
-        if resp.status_code == 200 and resp.text.strip().startswith("{"):
-            realtime = resp.json().get("data", {}).get("realtime", [])
-            items = [{"title": it.get("word", "").strip(),
-                      "url": f"https://s.weibo.com/weibo?q=%23{it.get('word', '')}%23",
-                      "hot": it.get("num", ""),
-                      "source": "微博热搜"} for it in realtime[:limit]]
-            print(f"  [微博热搜] weibo 官方源 {len(items)} 条")
-            return items
+                          "source": "微博热搜"} for it in data[:limit]
+                         if it.get("name") or it.get("title")]
+                if items:
+                    print(f"  [微博热搜] tenapi 源 {len(items)} 条")
+                    return items
     except Exception as e:
-        print(f"  [微博热搜] 全部方案失败（降级）: {e}")
+        print(f"  [微博热搜] 全部方案失败（降级）: {str(e)[:100]}")
     return []
 
 
