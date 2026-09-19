@@ -715,7 +715,7 @@ def build_global_data() -> dict:
             it["tagline"] = translate_en2zh(it["tagline"])
     items = (fetch_rss("https://store.steampowered.com/feeds/newreleases.xml", "Steam 新品", 30)
              + fetch_rss("http://www.gamelook.com.cn/feed", "GameLook", 30)
-             + fetch_rss("https://www.baijing.cn/feed", "白鲸出海", 30)
+             + fetch_baijing_home(30)
              + fetch_rss("https://techcrunch.com/feed/", "TechCrunch", 30)
              + fetch_hn(25))
     groups = {"游戏": [], "工具": [], "应用": [], "更多": []}
@@ -901,6 +901,83 @@ def fetch_36kr_rss(limit: int = 15) -> List[dict]:
         return []
 
 
+def _parse_baijing_reltime(text: str) -> Optional[datetime]:
+    """解析白鲸首页接口的相对时间（'刚刚'/'N 分钟前'/'N 小时前'/'N 天前'）
+    为北京时间 datetime；无法识别时返回 None"""
+    t = (text or "").strip()
+    if not t:
+        return None
+    if "刚刚" in t or "分钟" in t:
+        return NOW
+    m = re.search(r"(\d+)\s*小时前", t)
+    if m:
+        return NOW - timedelta(hours=int(m.group(1)))
+    m = re.search(r"(\d+)\s*天前", t)
+    if m:
+        return NOW - timedelta(days=int(m.group(1)))
+    return None
+
+
+def fetch_baijing_home(limit: int = 12, max_pages: int = 3) -> List[dict]:
+    """白鲸出海首页文章：调用首页同款 AJAX 接口（POST /index/ajax/get_article/，
+    参数 pn 为页码），接口返回的 add_time 是相对时间。
+    只保留当天文章；当天没有更新（如周末）则回退前一天，其余日期不取。
+    文章按时间倒序，翻页直到出现大前天及更早的文章即可覆盖今天/昨天全量。"""
+    headers = {"X-Requested-With": "XMLHttpRequest", "Referer": "https://www.baijing.cn/"}
+    today = NOW.astimezone(CN_TZ).date()
+    yesterday = today - timedelta(days=1)
+    cutoff = today - timedelta(days=2)   # 大前天：见到此日期即停止翻页
+    buckets: Dict[str, list] = {"today": [], "yesterday": []}
+    seen_ids = set()
+    try:
+        for pn in range(1, max_pages + 1):
+            resp = SESSION.post("https://www.baijing.cn/index/ajax/get_article/",
+                                data={"pn": pn}, headers=headers, timeout=15)
+            resp.raise_for_status()
+            arts = (resp.json().get("data") or {}).get("article_list") or []
+            if not arts:
+                break
+            page_dates = []
+            for a in arts:
+                aid = a.get("id")
+                if aid in seen_ids:
+                    continue
+                seen_ids.add(aid)
+                dt = _parse_baijing_reltime(a.get("add_time", ""))
+                if dt is None:
+                    continue
+                d = dt.astimezone(CN_TZ).date()
+                page_dates.append(d)
+                target_key = ("today" if d == today
+                              else "yesterday" if d == yesterday else None)
+                if target_key:
+                    buckets[target_key].append((d, a))
+            # 已翻到大前天或更早，今天/昨天的文章必然收集完整
+            if page_dates and min(page_dates) <= cutoff:
+                break
+            time.sleep(0.3)
+    except Exception as e:
+        print(f"  [白鲸出海] 首页接口抓取失败: {e}")
+        return []
+
+    day_articles = buckets["today"] or buckets["yesterday"]
+    chosen = "当天" if buckets["today"] else "前一天"
+    items: List[dict] = []
+    for d, a in day_articles[:limit]:
+        title = (a.get("title") or "").strip()
+        if not title:
+            continue
+        items.append({
+            "title": title,
+            "url": f"https://www.baijing.cn/article/{a.get('id')}.html",
+            "summary": (a.get("synopsis") or "").strip()[:120],
+            "time": datetime(d.year, d.month, d.day, 12, tzinfo=CN_TZ),
+            "source": "白鲸出海",
+        })
+    print(f"  [白鲸出海] 首页{chosen}文章 {len(items)} 条")
+    return items
+
+
 def _parse_aibot_date(text: str, now: datetime) -> Optional[datetime]:
     """解析 ai-bot 日期标签（形如 '9月18·周五'）为北京时间日期对象。
     标签无年份：月份大于当前月时判定为去年（处理 1 月初看到去年 12 月数据的情况）"""
@@ -1038,7 +1115,7 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
         "36kr": fetch_36kr_rss(12),
         "量子位": fetch_rss("https://www.qbitai.com/feed", "量子位", 12),
         "ai-bot": fetch_aibot_news(12),
-        "白鲸出海": fetch_rss("https://www.baijing.cn/feed", "白鲸出海", 12),
+        "白鲸出海": fetch_baijing_home(12),
     }
     # 游戏与产品板块
     gaming = {
