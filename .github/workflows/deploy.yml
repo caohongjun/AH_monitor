@@ -33,6 +33,9 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
+      - name: 安装 Playwright Chromium 浏览器
+        run: playwright install chromium
+
       - name: 运行舆情爬虫生成看板
         run: python crawler.py
 

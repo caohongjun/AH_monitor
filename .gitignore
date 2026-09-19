@@ -1,4 +1,8 @@
 # 构建产物（由 crawler.py 在 Actions 中生成，不入库）
 index.html
+finance.html
+global.html
+ai.html
+debug.log
 __pycache__/
 *.pyc

@@ -1,0 +1,900 @@
+# -*- coding: utf-8 -*-
+"""spiders.py — 数据抓取层：财经快讯 / 腾讯行情 / RSS(Atom) / HN / ai-bot"""
+import html
+import json
+import re
+import time
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
+
+import requests
+from bs4 import BeautifulSoup
+
+from config import (CN_TZ, NOW, TODAY, TODAY_START, MAX_EVENTS, OUTPUT_HTML,
+                    QUOTE_BATCH, BROWSER_HEADERS, KEYWORD_GROUPS, TAG_COLORS,
+                    SOURCE_STATS, HIGH_RISK_TAGS, MARKET_CORE_KEYWORDS,
+                    MARKET_KEYWORDS, MARKET_GLOBAL_KEYWORDS, BRIEF_GROUP_MAX,
+                    HEADLINES_MAX, NAV_ITEMS, WATCHLIST, WATCH_RELATED_MAX,
+                    GLOBAL_TAG_RULES, AI_CORE, AI_PRODUCT_VERBS)
+from utils import (SESSION, http_get, log, strip_html, parse_dt, ts_to_dt,
+                   ms_to_dt, is_today, norm_title, dedupe_and_sort,
+                   is_ai_item, is_ai_product, zh_tags)
+
+
+# ============================ 数据源 1：新浪财经 7x24 ============================
+
+def fetch_sina7x24() -> List[dict]:
+    """抓取新浪财经 7x24 全球直播，翻页直到遇到昨天及更早内容（最多 5 页）"""
+    items: List[dict] = []
+    for page in range(1, 6):
+        url = (
+            "https://zhibo.sina.com.cn/api/zhibo/feed"
+            f"?page={page}&page_size=50&zhibo_id=152&tag_id=0&type=0"
+        )
+        data = http_get(url, referer="https://finance.sina.com.cn/").json()
+        rows = data["result"]["data"]["feed"]["list"]
+        if not rows:
+            break
+        page_has_today = False
+        for row in rows:
+            dt = parse_dt(row.get("create_time", ""))
+            if not is_today(dt):
+                continue
+            page_has_today = True
+            items.append({
+                "time": dt,
+                "title": "",  # 7x24 快讯无独立标题
+                "content": row.get("rich_text", ""),
+                "url": row.get("docurl") or "https://finance.sina.com.cn/7x24/",
+                # 新浪在 ext.stocks 里直接给出关联标的（hk/cn 市场），比正则准
+                "hints": parse_sina_stocks(row.get("ext")),
+            })
+        if not page_has_today:
+            break
+        time.sleep(0.3)
+    return items
+
+
+# ============================ 数据源 2：东方财富 7x24 ============================
+
+def _em_get_page(sort_end: str) -> Optional[dict]:
+    """请求东财快讯单页；该接口偶发返回 data=null，空响应时重试最多 3 次"""
+    for attempt in range(3):
+        url = (
+            "https://np-listapi.eastmoney.com/comm/web/getFastNewsList"
+            f"?client=web&biz=web_724&fastColumn=102&sortEnd={sort_end}&pageSize=50"
+            f"&req_trace={int(time.time() * 1000)}"
+        )
+        data = http_get(url, referer="https://kuaixun.eastmoney.com/").json()
+        if (data.get("data") or {}).get("fastNewsList"):
+            return data["data"]
+        time.sleep(1.0)
+    return None
+
+
+def fetch_eastmoney() -> List[dict]:
+    """抓取东方财富 7x24 快讯，使用 sortEnd 游标向后翻页（最多 5 页）"""
+    items: List[dict] = []
+    sort_end = ""
+    for _ in range(5):
+        page_data = _em_get_page(sort_end)
+        if not page_data:
+            break
+        rows = page_data.get("fastNewsList") or []
+        page_has_today = False
+        for row in rows:
+            dt = parse_dt(row.get("showTime", ""))
+            if not is_today(dt):
+                continue
+            page_has_today = True
+            news_code = row.get("code", "")
+            items.append({
+                "time": dt,
+                "title": strip_html(row.get("title", "")),
+                "content": strip_html(row.get("summary", "")),
+                "url": f"https://finance.eastmoney.com/a/{news_code}.html" if news_code
+                       else "https://kuaixun.eastmoney.com/",
+                # stockList 形如 ["1.688836", "116.00700", "90.BK0464"]，仅取个股
+                "hints": parse_em_stock_list(row.get("stockList")),
+            })
+        if not page_has_today:
+            break
+        sort_end = page_data.get("sortEnd", "")
+        if not sort_end:
+            break
+        time.sleep(0.3)
+    return items
+
+
+# ============================ 数据源 3：华尔街见闻 7x24 ============================
+
+def fetch_wallstreetcn() -> List[dict]:
+    """抓取华尔街见闻全球直播频道（一次取 100 条，按今日过滤）"""
+    url = "https://api-one-wscn.awtmt.com/apiv1/content/lives?channel=global-channel&limit=100"
+    data = http_get(url, referer="https://wallstreetcn.com/").json()
+    items: List[dict] = []
+    for row in data.get("data", {}).get("items", []):
+        dt = ts_to_dt(row.get("display_time"))
+        if not is_today(dt):
+            continue
+        content = strip_html(row.get("content_text") or row.get("content") or "")
+        items.append({
+            "time": dt,
+            "title": strip_html(row.get("title") or ""),
+            "content": content,
+            "url": row.get("uri") or "https://wallstreetcn.com/live",
+        })
+    return items
+
+
+# ============================ 数据源 4：金十数据快讯 ============================
+
+def fetch_jin10() -> List[dict]:
+    """抓取金十数据 flash_newest.js（var newest = [...] 的 JS 变量）"""
+    resp = http_get("https://www.jin10.com/flash_newest.js",
+                    referer="https://www.jin10.com/")
+    match = re.search(r"var\s+newest\s*=\s*(\[.*\])\s*;?\s*$", resp.text.strip(), re.S)
+    if not match:
+        return []
+    rows = json.loads(match.group(1))
+    items: List[dict] = []
+    for row in rows:
+        dt = parse_dt(row.get("time", ""))
+        if not is_today(dt):
+            continue
+        payload = row.get("data") or {}
+        content = strip_html(payload.get("content") or "")
+        items.append({
+            "time": dt,
+            "title": strip_html(payload.get("title") or ""),
+            "content": content,
+            "url": f"https://flash.jin10.com/detail/{row['id']}",
+        })
+    return items
+
+
+# ============================ 数据源 5：新浪滚动财经新闻 ============================
+
+def fetch_sina_roll() -> List[dict]:
+    """抓取新浪财经滚动新闻（lid=2516 财经频道），翻页直到非今日（最多 3 页）"""
+    items: List[dict] = []
+    for page in range(1, 4):
+        url = (
+            "https://feed.mix.sina.com.cn/api/roll/get"
+            f"?pageid=153&lid=2516&k=&num=50&page={page}"
+        )
+        data = http_get(url, referer="https://finance.sina.com.cn/").json()
+        rows = data["result"]["data"]
+        if not rows:
+            break
+        page_has_today = False
+        for row in rows:
+            dt = ts_to_dt(row.get("ctime"))
+            if not is_today(dt):
+                continue
+            page_has_today = True
+            items.append({
+                "time": dt,
+                "title": strip_html(row.get("title", "")),
+                "content": strip_html(row.get("intro") or ""),
+                "url": row.get("url") or "https://finance.sina.com.cn/",
+            })
+        if not page_has_today:
+            break
+        time.sleep(0.3)
+    return items
+
+
+# ============================ 数据源 6：证券时报快讯 ============================
+
+def fetch_stcn() -> List[dict]:
+    """抓取证券时报快讯接口（/article/list.html?type=kx），翻页直到非今日"""
+    items: List[dict] = []
+    for page in range(1, 6):
+        url = f"https://www.stcn.com/article/list.html?type=kx&page={page}"
+        # 该接口要求 X-Requested-With 才返回 JSON，否则回退为 HTML 页面
+        resp = SESSION.get(
+            url,
+            headers={
+                "Referer": "https://www.stcn.com/article/list/kx.html",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            timeout=12,
+            verify=False,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        rows = data.get("data") or []
+        if not rows:
+            break
+        page_has_today = False
+        for row in rows:
+            dt = ms_to_dt(row.get("time"))
+            if not is_today(dt):
+                continue
+            page_has_today = True
+            detail = row.get("web_url") or row.get("url") or ""
+            items.append({
+                "time": dt,
+                "title": strip_html(row.get("title", "")),
+                "content": strip_html(row.get("content", "")),
+                "url": "https://www.stcn.com" + detail if detail.startswith("/")
+                       else (detail or "https://www.stcn.com/article/list/kx.html"),
+            })
+        if not page_has_today:
+            break
+        time.sleep(0.3)
+    return items
+
+
+# ============================ 数据源 7：每日经济新闻 ============================
+
+def _fetch_nbd_column(column_id: str) -> List[dict]:
+    """抓取每经单个栏目列表页（HTML），只保留链接日期为今天的文章"""
+    resp = http_get(f"https://www.nbd.com.cn/columns/{column_id}",
+                    referer="https://www.nbd.com.cn/", encoding="utf-8")
+    soup = BeautifulSoup(resp.text, "html.parser")
+    items: List[dict] = []
+    today_str = TODAY.strftime("%Y-%m-%d")
+    for a_tag in soup.find_all("a", href=True, title=True):
+        href = a_tag["href"]
+        title = a_tag["title"].strip()
+        if "/articles/" not in href or not title:
+            continue
+        # 文章 URL 形如 /articles/2026-09-14/4580000.html
+        if f"/articles/{today_str}/" not in href:
+            continue
+        # 时间取同一 <li> 内文本中的 "YYYY-MM-DD HH:MM:SS"
+        parent_li = a_tag.find_parent("li")
+        dt = None
+        if parent_li:
+            tm = re.search(r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})",
+                           parent_li.get_text(" ", strip=True))
+            if tm:
+                dt = parse_dt(tm.group(1))
+        items.append({
+            "time": dt or TODAY_START.replace(hour=18),  # 列表无精确时间时归入当日 18:00
+            "title": title,
+            "content": title,
+            "url": href if href.startswith("http") else "https://www.nbd.com.cn" + href,
+        })
+    return items
+
+
+def fetch_nbd() -> List[dict]:
+    """抓取每经"宏观"(310) 与"热点公司"(346) 两个栏目并按 URL 合并去重"""
+    merged: Dict[str, dict] = {}
+    for column_id in ("310", "346"):
+        try:
+            for item in _fetch_nbd_column(column_id):
+                merged.setdefault(item["url"], item)
+        except Exception as exc:  # noqa: BLE001 - 单栏目失败不影响另一栏目
+            log(f"[源] 每经栏目 {column_id} 失败：{type(exc).__name__}: {exc}")
+    return list(merged.values())
+
+
+# 数据源注册表：顺序即优先级（同一条快讯多源转载时，保留排在前面的源）
+SOURCE_REGISTRY: List[tuple] = [
+    ("东方财富", fetch_eastmoney),
+    ("证券时报", fetch_stcn),
+    ("新浪7x24", fetch_sina7x24),
+    ("华尔街见闻", fetch_wallstreetcn),
+    ("金十数据", fetch_jin10),
+    ("新浪滚动", fetch_sina_roll),
+    ("每经", fetch_nbd),
+]
+
+
+def collect_all_news() -> List[dict]:
+    """依次执行全部数据源抓取；单源异常只记录、不中断整体"""
+    all_news: List[dict] = []
+    for source_name, fetcher in SOURCE_REGISTRY:
+        try:
+            rows = fetcher()
+            for row in rows:
+                row["source"] = source_name
+            SOURCE_STATS[source_name] = {"fetched": len(rows), "matched": 0}
+            all_news.extend(rows)
+            log(f"[源] {source_name:<6} 今日抓取 {len(rows)} 条")
+        except Exception as exc:  # noqa: BLE001 - 公开接口任何异常都要降级
+            SOURCE_STATS[source_name] = {"fetched": 0, "matched": 0}
+            log(f"[源] {source_name:<6} 抓取失败：{type(exc).__name__}: {exc}")
+    log(f"合计今日候选快讯 {len(all_news)} 条")
+    return all_news
+
+
+# ============================ 腾讯行情补充 ============================
+
+def fetch_quotes(tcodes: List[str]) -> Dict[str, dict]:
+    """批量查询腾讯行情，返回 {tcode: {name, price, pct}}；失败返回空字典"""
+    result: Dict[str, dict] = {}
+    for i in range(0, len(tcodes), QUOTE_BATCH):
+        batch = tcodes[i:i + QUOTE_BATCH]
+        url = "https://qt.gtimg.cn/q=" + ",".join(batch)
+        try:
+            resp = SESSION.get(url, headers={"Referer": "https://gu.qq.com/"},
+                               timeout=12, verify=False)
+            resp.encoding = "gbk"  # 腾讯行情接口固定 GBK 编码
+            for m in re.finditer(r'v_([a-z0-9]+)="([^"]*)"', resp.text):
+                tcode, body = m.group(1), m.group(2)
+                fields = body.split("~")
+                if len(fields) <= 33 or not fields[1]:
+                    continue
+                # 字段约定：[1]名称 [3]现价 [4]昨收 [31]涨跌额 [32]涨跌幅%
+                price = fields[3]
+                pct = None
+                try:
+                    pct = float(fields[32])
+                except (ValueError, IndexError):
+                    pass
+                if pct is None:
+                    try:  # 极端情况下用现价/昨收兜底重算
+                        pct = round(
+                            (float(fields[3]) - float(fields[4]))
+                            / float(fields[4]) * 100, 2
+                        )
+                    except (ValueError, ZeroDivisionError, IndexError):
+                        pct = None
+                result[tcode] = {"name": fields[1], "price": price, "pct": pct}
+        except Exception as exc:  # noqa: BLE001
+            log(f"[行情] 第 {i // QUOTE_BATCH + 1} 批查询失败：{type(exc).__name__}: {exc}")
+        time.sleep(0.2)
+    return result
+
+
+# ============================ AI 资讯与海外产品页 ============================
+
+# RSS/HN 条目统一结构：{title, url, time(北京时间), summary, source}
+
+import email.utils as _email_utils
+
+
+def fetch_rss(url: str, source_name: str, limit: int = 30, today_only: bool = True) -> List[dict]:
+    """通用 RSS 2.0 / Atom 抓取解析：返回条目列表，时间统一转为北京时间。
+    today_only=True 时仅保留北京时间当天的条目（无时间的条目保留，无法判定日期时不丢弃）"""
+    try:
+        resp = SESSION.get(url, timeout=15,
+                           headers={"Accept": "application/rss+xml, application/xml, text/xml, */*"})
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except Exception as exc:
+        print(f"  [RSS] {source_name} 抓取失败: {exc}")
+        return []
+    items: List[dict] = []
+    if root.tag == "{http://www.w3.org/2005/Atom}feed":
+        # —— Atom 格式（如 Product Hunt）：entry/title/link@href/published ——
+        for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
+            title = (entry.findtext("{http://www.w3.org/2005/Atom}title") or "").strip()
+            link_el = entry.find("{http://www.w3.org/2005/Atom}link")
+            link = (link_el.get("href") or "").strip() if link_el is not None else ""
+            pub = (entry.findtext("{http://www.w3.org/2005/Atom}published")
+                   or entry.findtext("{http://www.w3.org/2005/Atom}updated") or "").strip()
+            desc = html.unescape(re.sub(r"<[^>]+>", " ",
+                                        entry.findtext("{http://www.w3.org/2005/Atom}content")
+                                        or entry.findtext("{http://www.w3.org/2005/Atom}summary") or "")).strip()
+            try:
+                dt = datetime.fromisoformat(pub.replace("Z", "+00:00")).astimezone(CN_TZ) if pub else None
+            except Exception:
+                dt = None
+            if not title:
+                continue
+            items.append({"title": title, "url": link, "time": dt,
+                          "summary": desc[:120], "source": source_name})
+            if len(items) >= limit:
+                break
+        print(f"  [RSS] {source_name}: {len(items)} 条（Atom）")
+        # 不 return，统一走下方三级回退过滤
+    # —— RSS 2.0 格式 ——
+    for item in root.iter("item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        pub = (item.findtext("pubDate") or "").strip()
+        desc = html.unescape(re.sub(r"<[^>]+>", " ", item.findtext("description") or "")).strip()
+        # RFC2822 时间解析并统一到北京时间
+        try:
+            dt = _email_utils.parsedate_to_datetime(pub).astimezone(CN_TZ) if pub else None
+        except Exception:
+            dt = None
+        if not title:
+            continue
+        items.append({"title": title, "url": link, "time": dt,
+                      "summary": desc[:120], "source": source_name})
+        if len(items) >= limit:
+            break
+    print(f"  [RSS] {source_name}: {len(items)} 条")
+    # 三级回退过滤：当天 → 最近24小时 → 首页全部
+    if today_only:
+        from datetime import timedelta
+        now_cn = datetime.now(CN_TZ)
+        # 第一级：北京时间当天
+        today_items = [it for it in items if it["time"] is not None and is_today(it["time"])]
+        if today_items:
+            items = today_items
+        else:
+            # 第二级：最近24小时
+            cutoff = now_cn - timedelta(hours=24)
+            recent = [it for it in items if it["time"] is not None and it["time"] >= cutoff]
+            if recent:
+                items = recent
+                print(f"  [RSS] {source_name}: 当日为空，取最近24小时 {len(items)} 条")
+            else:
+                # 第三级：首页全部（含无时间字段的）
+                print(f"  [RSS] {source_name}: 近24小时为空，取首页全部 {len(items)} 条")
+    return items
+
+
+def fetch_hn(limit: int = 25) -> List[dict]:
+    """Hacker News 热点抓取：topstories 取前 N 个 id，逐条拉取详情"""
+    try:
+        resp = SESSION.get("https://hacker-news.firebaseio.com/v0/topstories.json", timeout=15)
+        ids = resp.json()[:limit]
+    except Exception as exc:
+        print(f"  [HN] 抓取失败: {exc}")
+        return []
+    items = []
+    for i in ids:
+        try:
+            r = SESSION.get(f"https://hacker-news.firebaseio.com/v0/item/{i}.json", timeout=10)
+            d = r.json() or {}
+            if not d.get("title"):
+                continue
+            items.append({
+                "title": d["title"],
+                "url": d.get("url") or f"https://news.ycombinator.com/item?id={i}",
+                "time": datetime.fromtimestamp(d.get("time", 0), tz=timezone.utc).astimezone(CN_TZ),
+                "summary": f"HN 热度 {d.get('score', 0)} 分 / {d.get('descendants', 0)} 评论",
+                "source": "Hacker News",
+            })
+        except Exception:
+            continue
+    print(f"  [HN] Hacker News: {len(items)} 条")
+    return items
+
+
+def fetch_aibot(limit: int = 25) -> List[dict]:
+    """ai-bot.cn AI 快讯日报页解析（该站关闭了 RSS，改爬 /daily 页面）：
+    .news-item 内 h2>a 为标题与链接，p 为摘要；条目无精确时间，用抓取时刻近似"""
+    try:
+        resp = SESSION.get("https://ai-bot.cn/daily/", timeout=15)
+        resp.raise_for_status()
+        resp.encoding = "utf-8"  # 该页未声明 charset，requests 会误用 latin-1 导致中文乱码
+        soup = BeautifulSoup(resp.text, "html.parser")
+    except Exception as exc:
+        print(f"  [ai-bot] 抓取失败: {exc}")
+        return []
+    items = []
+    approx_time = NOW  # 同一时刻 + sorted 稳定性 = 保持页面原有的新旧顺序
+    for box in soup.select(".news-item")[:limit]:
+        a = box.select_one("h2 a")
+        if not a:
+            continue
+        title = a.get_text(strip=True)
+        if not title:
+            continue
+        p = box.select_one("p")
+        summary = p.get_text(" ", strip=True)[:120] if p else ""
+        items.append({"title": title, "url": a.get("href") or "",
+                      "time": approx_time, "summary": summary, "source": "ai-bot快讯"})
+    print(f"  [ai-bot] ai-bot.cn: {len(items)} 条")
+    return items
+
+
+def build_ai_data() -> tuple:
+    """收集 AI 页数据：量子位 + ai-bot（国内）、TechCrunch + HN（海外），筛出资讯流与产品发布"""
+    items = (fetch_rss("https://www.qbitai.com/feed", "量子位", 30)
+             + fetch_rss("https://techcrunch.com/feed/", "TechCrunch", 30)
+             + fetch_hn(25)
+             + fetch_aibot(25))
+    ai_items = [it for it in items if is_ai_item(f"{it['title']} {it['summary']}")]
+    # 国内 / 海外按来源划分（量子位与 ai-bot 为中文源）
+    DOMESTIC_SOURCES = {"量子位", "ai-bot快讯"}
+    domestic = [it for it in ai_items if it["source"] in DOMESTIC_SOURCES]
+    overseas = [it for it in ai_items if it["source"] not in DOMESTIC_SOURCES]
+    products = [it for it in ai_items if is_ai_product(f"{it['title']} {it['summary']}")]
+    dom = dedupe_and_sort(domestic, 15)
+    ovs = dedupe_and_sort(overseas, 15)
+    prods = dedupe_and_sort(products, 12)
+    print(f"  [AI] 国内 {len(dom)} 条 / 海外 {len(ovs)} 条 / 产品发布 {len(prods)} 条")
+    return dom, ovs, prods
+
+
+def translate_en2zh(text: str) -> str:
+    """英文短句翻译为中文（Google translate_a 公开接口，无需密钥）；失败时降级返回原文"""
+    if not text or not re.search(r"[a-zA-Z]{3,}", text):
+        return text  # 无英文内容或空串直接返回
+    try:
+        resp = SESSION.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": "en", "tl": "zh-CN", "dt": "t", "q": text},
+            timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        # 返回结构 [[["译句","原句",...],...]...]，拼接所有翻译分段
+        zh = "".join(seg[0] for seg in (data[0] or []) if seg and seg[0])
+        return zh or text
+    except Exception:
+        return text
+
+
+def fetch_ph_leaderboard(limit: int = 10) -> List[dict]:
+    """抓取 Product Hunt 昨日每日榜单（按投票数排序）。
+    用 Playwright 无头浏览器渲染 leaderboard 页面并提取产品名 / tagline / 投票数；
+    若 Playwright 不可用或抓取失败，回退到官方 RSS feed（数据非榜单，仅作降级）。"""
+    yesterday = datetime.now(CN_TZ) - timedelta(days=1)
+    url = (f"https://www.producthunt.com/leaderboard/daily/"
+           f"{yesterday.year}/{yesterday.month}/{yesterday.day}")
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("  [PH榜单] playwright 未安装，回退 RSS feed")
+        return _ph_rss_fallback(limit)
+
+    items: List[dict] = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True,
+                                        args=["--no-sandbox", "--disable-setuid-sandbox"])
+            context = browser.new_context(
+                user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/124.0.0.0 Safari/537.36"),
+                viewport={"width": 1920, "height": 1080},
+                locale="en-US",
+            )
+            page = context.new_page()
+            page.goto(url, timeout=45000, wait_until="domcontentloaded")
+            # 轮询等待内容渲染完成（避开 Cloudflare 挑战页）
+            for _ in range(20):
+                time.sleep(1.5)
+                content = page.content()
+                if "Just a moment" not in content and len(content) > 50000:
+                    break
+            else:
+                raise RuntimeError("页面未在预期时间内渲染完成或被 Cloudflare 拦截")
+
+            # 在浏览器端提取榜单数据：遍历所有指向 /products/ 的链接，
+            # 向上找最近的列表项容器，从中读取产品名、tagline、投票数
+            data = page.evaluate(r"""() => {
+                const results = [];
+                const seen = new Set();
+                const links = document.querySelectorAll('a[href*="/products/"]');
+                links.forEach(a => {
+                    const href = a.getAttribute('href') || '';
+                    const m = href.match(/\/products\/([a-z0-9-]+)/);
+                    if (!m) return;
+                    const slug = m[1];
+                    if (seen.has(slug)) return;
+                    // 向上找包含投票数的祖先容器
+                    let container = a.closest('li, [class*="item"], [class*="post"], [data-test]');
+                    if (!container) container = a.parentElement?.parentElement;
+                    if (!container) return;
+                    const text = container.innerText || '';
+                    const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
+                    // 产品名：取链接文本
+                    const name = (a.innerText || a.textContent || '').trim();
+                    // tagline：容器内非产品名、非数字的第一行长文本
+                    let tagline = '';
+                    for (const line of lines) {
+                        if (line !== name && line.length > 8 && !/^\d+$/.test(line)
+                            && !/vote/i.test(line) && line.length < 200) {
+                            tagline = line;
+                            break;
+                        }
+                    }
+                    // 投票数：匹配数字 + vote
+                    const voteMatch = text.match(/(\d[\d,]*)\s*vote/i);
+                    const votes = voteMatch ? voteMatch[1].replace(/,/g, '') : '';
+                    results.push({
+                        name: name || slug,
+                        slug: slug,
+                        tagline: tagline,
+                        votes: votes,
+                        url: 'https://www.producthunt.com/products/' + slug,
+                    });
+                    seen.add(slug);
+                });
+                return results;
+            }""")
+            browser.close()
+
+            if not data:
+                raise RuntimeError("页面解析未提取到产品数据")
+
+            # 按投票数排序（榜单顺序），取前 limit 条
+            def _vote_int(x):
+                try:
+                    return int(x.get("votes") or 0)
+                except (ValueError, TypeError):
+                    return 0
+            data.sort(key=_vote_int, reverse=True)
+            for d in data[:limit]:
+                items.append({
+                    "title": d["name"],
+                    "url": d["url"],
+                    "tagline": d["tagline"],
+                    "summary": d["tagline"],
+                    "source": "Product Hunt",
+                    "time": yesterday,
+                })
+            print(f"  [PH榜单] Playwright 抓取 {len(items)} 条（昨日 {yesterday.strftime('%Y-%m-%d')}）")
+    except Exception as exc:
+        print(f"  [PH榜单] Playwright 抓取失败: {exc}，回退 RSS feed")
+        return _ph_rss_fallback(limit)
+    return items
+
+
+def _ph_rss_fallback(limit: int = 10) -> List[dict]:
+    """PH 数据降级方案：从官方 RSS feed 取最新产品（非榜单排序，仅作保底）"""
+    ph_items = dedupe_and_sort(
+        fetch_rss("https://www.producthunt.com/feed", "Product Hunt", 15, today_only=False), limit)
+    for it in ph_items:
+        t = it["title"]
+        for sep in (": ", " – ", " - "):
+            if sep in t:
+                name, tagline = t.split(sep, 1)
+                it["title"], it["tagline"] = name.strip(), tagline.strip()
+                break
+        else:
+            it["tagline"] = (it["summary"] or "")[:60]
+        it["tagline_en"] = it["tagline"]
+        it["tagline"] = translate_en2zh(it["tagline"])
+    return ph_items
+
+
+def build_global_data() -> dict:
+    """收集海外产品页数据：PH 独立成栏；Steam/GameLook 归游戏类；白鲸/HN/TechCrunch 按规则分类"""
+    # PH 榜单：用 Playwright 抓取昨日每日榜单，失败时回退 RSS
+    ph_items = fetch_ph_leaderboard(10)
+    # 翻译 tagline 为中文（Playwright 路径也需翻译；RSS 回退路径已在 _ph_rss_fallback 内处理）
+    for it in ph_items:
+        if "tagline_en" not in it and it.get("tagline"):
+            it["tagline_en"] = it["tagline"]
+            it["tagline"] = translate_en2zh(it["tagline"])
+    items = (fetch_rss("https://store.steampowered.com/feeds/newreleases.xml", "Steam 新品", 30)
+             + fetch_rss("http://www.gamelook.com.cn/feed", "GameLook", 30)
+             + fetch_rss("https://www.baijing.cn/feed", "白鲸出海", 30)
+             + fetch_rss("https://techcrunch.com/feed/", "TechCrunch", 30)
+             + fetch_hn(25))
+    groups = {"游戏": [], "工具": [], "应用": [], "更多": []}
+    seen = set()
+    for it in items:
+        key = norm_title(it["title"])
+        if key in seen:
+            continue
+        seen.add(key)
+        # 游戏类：Steam 官方新品与 GameLook（游戏行业垂直媒体）直接归组
+        if it["source"] in ("Steam", "GameLook") or "游戏" in zh_tags(it["title"]):
+            groups["游戏"].append(it)
+            continue
+        tags = zh_tags(f"{it['title']} {it['summary']}")
+        if "工具" in tags:
+            groups["工具"].append(it)
+        elif "应用" in tags:
+            groups["应用"].append(it)
+        else:
+            groups["更多"].append(it)
+    for name in groups:
+        groups[name] = dedupe_and_sort(groups[name], 10)
+    groups["PH精选"] = ph_items  # Product Hunt 独立栏（不参与其余分类）
+    print("  [海外] " + " / ".join(f"{k} {len(v)}" for k, v in groups.items()))
+    return groups
+
+
+# ========================= 热榜类数据源 =========================
+
+def fetch_toutiao_hot() -> List[dict]:
+    """今日头条热榜：官方 hot-board 接口返回 JSON，含 Title/Url/热度"""
+    try:
+        resp = SESSION.get("https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc",
+                           timeout=12)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        items = []
+        for it in data[:20]:
+            items.append({
+                "title": it.get("Title", "").strip(),
+                "url": it.get("Url", ""),
+                "hot": it.get("HotValue", ""),
+                "source": "今日头条",
+            })
+        print(f"  [头条热榜] {len(items)} 条")
+        return items
+    except Exception as e:
+        print(f"  [头条热榜] 抓取失败: {e}")
+        return []
+
+
+def fetch_weibo_hot() -> List[dict]:
+    """微博热搜：优先用第三方聚合 API（oioweb / tenapi），失败则回退到
+    weibo.com 访客 Cookie 两步法。本地网络可能拿不到，线上 Actions 通常能成功"""
+    # 方案 A：oioweb 聚合 API
+    try:
+        resp = SESSION.get("https://api.oioweb.cn/api/common/HotList?type=weibo", timeout=10)
+        if resp.status_code == 200 and resp.text.strip().startswith("{"):
+            data = resp.json().get("data", [])
+            if isinstance(data, list) and data:
+                items = [{"title": it.get("title", "").strip(),
+                          "url": it.get("url", ""),
+                          "hot": it.get("hot", it.get("num", "")),
+                          "source": "微博热搜"} for it in data[:20]]
+                print(f"  [微博热搜] oioweb 源 {len(items)} 条")
+                return items
+    except Exception:
+        pass
+    # 方案 B：tenapi
+    try:
+        resp = SESSION.get("https://tenapi.cn/v2/weibohot", timeout=10)
+        if resp.status_code == 200 and resp.text.strip().startswith("{"):
+            data = resp.json().get("data", [])
+            if isinstance(data, list) and data:
+                items = [{"title": it.get("name", it.get("title", "")).strip(),
+                          "url": it.get("url", ""),
+                          "hot": it.get("hot", ""),
+                          "source": "微博热搜"} for it in data[:20]]
+                print(f"  [微博热搜] tenapi 源 {len(items)} 条")
+                return items
+    except Exception:
+        pass
+    # 方案 C：weibo.com 访客 Cookie 两步法
+    try:
+        SESSION.get("https://weibo.com/", timeout=8)
+        resp = SESSION.get("https://weibo.com/ajax/side/hotSearch", timeout=10)
+        if resp.status_code == 200 and resp.text.strip().startswith("{"):
+            realtime = resp.json().get("data", {}).get("realtime", [])
+            items = [{"title": it.get("word", "").strip(),
+                      "url": f"https://s.weibo.com/weibo?q=%23{it.get('word', '')}%23",
+                      "hot": it.get("num", ""),
+                      "source": "微博热搜"} for it in realtime[:20]]
+            print(f"  [微博热搜] weibo 官方源 {len(items)} 条")
+            return items
+    except Exception as e:
+        print(f"  [微博热搜] 全部方案失败（降级）: {e}")
+    return []
+
+
+def fetch_baidu_hot() -> List[dict]:
+    """百度热搜：官方 board API 返回 JSON，嵌套结构 cards[0].content[0].content"""
+    try:
+        resp = SESSION.get("https://top.baidu.com/api/board?platform=wise&tab=realtime", timeout=12)
+        resp.raise_for_status()
+        content = resp.json()["data"]["cards"][0]["content"][0]["content"]
+        items = []
+        for it in content[:20]:
+            items.append({
+                "title": it.get("word", "").strip(),
+                "url": it.get("url", ""),
+                "hot": it.get("hotScore", ""),
+                "source": "百度热搜",
+            })
+        print(f"  [百度热搜] {len(items)} 条")
+        return items
+    except Exception as e:
+        print(f"  [百度热搜] 抓取失败: {e}")
+        return []
+
+
+def fetch_github_trending() -> List[dict]:
+    """GitHub Trending：爬取 trending 页面，提取仓库名/描述/今日 star 数"""
+    try:
+        resp = SESSION.get("https://github.com/trending", timeout=30)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        items = []
+        for article in soup.select("article.Box-row")[:15]:
+            h2 = article.select_one("h2 a")
+            if not h2:
+                continue
+            name = h2.get_text(strip=True).replace("\n", "").replace(" ", "")
+            desc_tag = article.select_one("p")
+            desc = desc_tag.get_text(strip=True) if desc_tag else ""
+            star_tag = article.select_one("span.d-inline-block.float-sm-right")
+            stars_today = star_tag.get_text(strip=True) if star_tag else ""
+            items.append({
+                "title": name,
+                "url": f"https://github.com/{name}",
+                "summary": desc,
+                "hot": stars_today,
+                "source": "GitHub Trending",
+            })
+        print(f"  [GitHub Trending] {len(items)} 条")
+        return items
+    except Exception as e:
+        print(f"  [GitHub Trending] 抓取失败: {e}")
+        return []
+
+
+def fetch_36kr_rss(limit: int = 15) -> List[dict]:
+    """36kr 官方 RSS（www.36kr.com/feed），用内置 ElementTree 解析"""
+    try:
+        resp = SESSION.get("https://www.36kr.com/feed", timeout=15)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        items = []
+        for item in root.findall(".//item")[:limit]:
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            desc = re.sub(r"<[^>]+>", "", item.findtext("description") or "").strip()
+            pub = item.findtext("pubDate") or ""
+            items.append({
+                "title": title,
+                "url": link,
+                "summary": desc[:120],
+                "time": parse_dt(pub) if pub else None,
+                "source": "36kr",
+            })
+        print(f"  [36kr RSS] {len(items)} 条")
+        return items
+    except Exception as e:
+        print(f"  [36kr RSS] 抓取失败: {e}")
+        return []
+
+
+def fetch_aibot_news(limit: int = 15) -> List[dict]:
+    """ai-bot.cn 每日 AI 新闻页：页面正文用 h2 列出最新新闻（按时间倒序），
+    提取 h2 标题及其详情链接，取前 limit 条作为当日 AI 新闻"""
+    try:
+        resp = SESSION.get("https://ai-bot.cn/daily-ai-news/", timeout=15)
+        resp.raise_for_status()
+        resp.encoding = "utf-8"
+        soup = BeautifulSoup(resp.text, "html.parser")
+        items = []
+        for h2 in soup.find_all("h2"):
+            a = h2.find("a", href=True)
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            href = a["href"]
+            if len(title) < 6 or not href or "ai-bot.cn" not in href:
+                continue
+            items.append({
+                "title": title,
+                "url": href,
+                "summary": "",
+                "source": "ai-bot",
+            })
+            if len(items) >= limit:
+                break
+        print(f"  [ai-bot 新闻] {len(items)} 条")
+        return items
+    except Exception as e:
+        print(f"  [ai-bot 新闻] 抓取失败: {e}")
+        return []
+
+
+def build_hotboard_data(market_headlines: dict = None) -> dict:
+    """收集今日热榜页数据：社会舆情（头条/微博/财经要点）、科技动态（36kr/量子位/ai-bot）、
+    游戏与产品（GameLook/PH/GitHub Trending），按板块分组返回"""
+    # 社会舆情板块：头条 + 微博 + 百度 + 财经要点（国内+海外合并，按评分排序）
+    social = {
+        "今日头条": fetch_toutiao_hot(),
+        "微博热搜": fetch_weibo_hot(),
+        "百度热搜": fetch_baidu_hot(),
+    }
+    if market_headlines:
+        headlines = (market_headlines.get("domestic") or []) + (market_headlines.get("global") or [])
+        headlines.sort(key=lambda t: (t.get("score", 0), t.get("time")), reverse=True)
+        # 统一格式为热榜条目
+        social["财经要点"] = [{
+            "title": (it.get("title") or it.get("content", "")[:60]).strip(),
+            "url": it.get("url", ""),
+            "summary": (it.get("content") or "")[:80],
+            "source": "财经要点",
+        } for it in headlines[:10]]
+    # 科技动态板块
+    tech = {
+        "36kr": fetch_36kr_rss(12),
+        "量子位": fetch_rss("https://www.qbitai.com/feed", "量子位", 12),
+        "ai-bot": fetch_aibot_news(12),
+        "白鲸出海": fetch_rss("https://www.baijing.cn/feed", "白鲸出海", 12),
+    }
+    # 游戏与产品板块
+    gaming = {
+        "GameLook": fetch_rss("http://www.gamelook.com.cn/feed", "GameLook", 12),
+        "Product Hunt": build_global_data()["PH精选"],
+        "GitHub Trending": fetch_github_trending(),
+    }
+    print("  [热榜] 社会舆情:" + " ".join(f"{k}{len(v)}" for k, v in social.items())
+          + " | 科技:" + " ".join(f"{k}{len(v)}" for k, v in tech.items())
+          + " | 游戏产品:" + " ".join(f"{k}{len(v)}" for k, v in gaming.items()))
+    return {"social": social, "tech": tech, "gaming": gaming}
