@@ -517,6 +517,48 @@ def translate_en2zh(text: str) -> str:
         return text
 
 
+def _parse_ph_from_text(text: str) -> List[dict]:
+    """从 PH leaderboard 页面全文本中兜底解析产品数据。
+    按行扫描：遇到 /products/{slug} 链接后，取后续行作为 tagline，遇到 vote 行取投票数。"""
+    if not text:
+        return []
+    results: List[dict] = []
+    seen = set()
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        # 匹配产品链接行
+        m = re.search(r"/products/([a-z0-9-]+)", line)
+        if m and m.group(1) not in seen:
+            slug = m.group(1)
+            seen.add(slug)
+            name = line.split("/")[-1].replace("-", " ").title() if "/" not in line else line
+            # 尝试从当前行提取产品名（去掉 URL 部分）
+            name_clean = re.sub(r"https?://\S+|/\S+", "", line).strip() or slug.replace("-", " ").title()
+            tagline = ""
+            votes = ""
+            # 向后扫描最多 5 行，找 tagline 和投票数
+            for j in range(i + 1, min(i + 6, len(lines))):
+                nxt = lines[j]
+                vm = re.match(r"^([\d,]+)\s*vote", nxt, re.IGNORECASE)
+                if vm:
+                    votes = vm.group(1).replace(",", "")
+                    break
+                if not tagline and len(nxt) > 8 and not re.match(r"^[\d,]+$", nxt) \
+                        and "/products/" not in nxt and len(nxt) < 200:
+                    tagline = nxt
+            results.append({
+                "name": name_clean,
+                "slug": slug,
+                "tagline": tagline,
+                "votes": votes,
+                "url": f"https://www.producthunt.com/products/{slug}",
+            })
+        i += 1
+    return results
+
+
 def fetch_ph_leaderboard(limit: int = 10) -> List[dict]:
     """抓取 Product Hunt 昨日每日榜单（按投票数排序）。
     用 Playwright 无头浏览器渲染 leaderboard 页面并提取产品名 / tagline / 投票数；
@@ -565,25 +607,35 @@ def fetch_ph_leaderboard(limit: int = 10) -> List[dict]:
                     if (!m) return;
                     const slug = m[1];
                     if (seen.has(slug)) return;
-                    // 向上找包含投票数的祖先容器
-                    let container = a.closest('li, [class*="item"], [class*="post"], [data-test]');
+                    // 向上找包含投票数的祖先容器（限制大小，避免取到整个页面）
+                    let container = null;
+                    let el = a;
+                    for (let i = 0; i < 6 && el.parentElement; i++) {
+                        el = el.parentElement;
+                        const txt = el.innerText || '';
+                        // 容器文本在 30~400 字之间，且包含 vote 关键字，认为是产品卡片
+                        if (txt.length > 30 && txt.length < 400 && /vote/i.test(txt)) {
+                            container = el;
+                            break;
+                        }
+                    }
                     if (!container) container = a.parentElement?.parentElement;
                     if (!container) return;
                     const text = container.innerText || '';
                     const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
                     // 产品名：取链接文本
                     const name = (a.innerText || a.textContent || '').trim();
-                    // tagline：容器内非产品名、非数字的第一行长文本
+                    // tagline：容器内非产品名、非纯数字、非 vote 的第一行长文本
                     let tagline = '';
                     for (const line of lines) {
                         if (line !== name && line.length > 8 && !/^\d+$/.test(line)
-                            && !/vote/i.test(line) && line.length < 200) {
+                            && !/^[\d,]+\s*vote/i.test(line) && line.length < 200) {
                             tagline = line;
                             break;
                         }
                     }
-                    // 投票数：匹配数字 + vote
-                    const voteMatch = text.match(/(\d[\d,]*)\s*vote/i);
+                    // 投票数：匹配 "数字 vote" 格式
+                    const voteMatch = text.match(/([\d,]+)\s*vote/i);
                     const votes = voteMatch ? voteMatch[1].replace(/,/g, '') : '';
                     results.push({
                         name: name || slug,
@@ -596,10 +648,20 @@ def fetch_ph_leaderboard(limit: int = 10) -> List[dict]:
                 });
                 return results;
             }""")
-            browser.close()
+
+            if not data:
+                # 兜底：从页面全文本中正则解析产品行（产品链接 + 投票数）
+                full_text = page.inner_text("body")
+                browser.close()
+                data = _parse_ph_from_text(full_text)
+            else:
+                browser.close()
 
             if not data:
                 raise RuntimeError("页面解析未提取到产品数据")
+
+            print(f"  [PH榜单] 原始提取 {len(data)} 条，样例: "
+                  + str(data[:3])[:200])
 
             # 按投票数排序（榜单顺序），取前 limit 条
             def _vote_int(x):
