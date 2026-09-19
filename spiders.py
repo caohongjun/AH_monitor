@@ -966,7 +966,8 @@ def fetch_baijing_home(limit: int = 20, max_pages: int = 3) -> List[dict]:
             continue
         items.append({
             "title": title,
-            "url": f"https://www.baijing.cn/article/{a.get('id')}.html",
+            # 站内真实路由为 /article/{id}（无 .html 后缀；带后缀会落到"请稍候"错误页）
+            "url": f"https://www.baijing.cn/article/{a.get('id')}",
             "summary": (a.get("synopsis") or "").strip()[:120],
             "time": datetime(d.year, d.month, d.day, 12, tzinfo=CN_TZ),
             "source": "白鲸出海",

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """utils.py — 基础工具层：会话 / 日志 / 时间转换 / 文本处理 / 通用筛选"""
+import email.utils as email_utils
 import json
 import re
 import time
@@ -50,10 +51,23 @@ def strip_html(raw) -> str:
 
 
 def parse_dt(value: str, fmt: str = "%Y-%m-%d %H:%M:%S") -> Optional[datetime]:
-    """把字符串时间解析为北京时间 datetime；解析失败返回 None（不做 now 兜底）"""
+    """把字符串时间解析为北京时间 datetime；解析失败返回 None（不做 now 兜底）。
+    依次尝试：调用方指定格式 → 带时区偏移的同类格式（如 36kr 的
+    '2026-09-19 09:02:56 +0800'，先归一化多余空白）→ RFC2822（RSS 标准 pubDate）。
+    带时区的结果统一转换为北京时间，无时区的按北京时间处理。"""
+    if not value:
+        return None
+    text = re.sub(r"\s+", " ", str(value).strip())
+    for candidate in (fmt, "%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M",
+                      "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
+        try:
+            dt = datetime.strptime(text, candidate)
+            return dt.astimezone(CN_TZ) if dt.tzinfo else dt.replace(tzinfo=CN_TZ)
+        except ValueError:
+            continue
     try:
-        return datetime.strptime(value, fmt).replace(tzinfo=CN_TZ)
-    except (ValueError, TypeError):
+        return email_utils.parsedate_to_datetime(text).astimezone(CN_TZ)
+    except (TypeError, ValueError):
         return None
 
 

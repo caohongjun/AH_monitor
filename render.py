@@ -756,13 +756,36 @@ _SOURCE_FAVICON = {
     "GitHub Trending": "github.com",
 }
 
+# 点击模块标题时跳转的信息源页面地址（未配置的源如聚合类"财经要点"标题不加链接）
+_SOURCE_HOME = {
+    "今日头条":  "https://www.toutiao.com/",
+    "微博热搜":  "https://s.weibo.com/top/summary",
+    "百度热搜":  "https://top.baidu.com/board?tab=realtime",
+    "36kr":      "https://www.36kr.com/",
+    "量子位":    "https://www.qbitai.com/",
+    "ai-bot":    "https://ai-bot.cn/daily-ai-news/",
+    "白鲸出海":  "https://www.baijing.cn/",
+    "GameLook":  "http://www.gamelook.com.cn/",
+    "Product Hunt": "https://www.producthunt.com/",
+    "GitHub Trending": "https://github.com/trending",
+}
+
 
 def _hot_module(source_name: str, items: List[dict]) -> str:
     """渲染单个信息源模块：标题行（favicon+名称+条数 | 更新时间）+ 编号列表。
-    模块整体固定等高，列表展示该源抓取到的全部条目，超出高度时在列表内部滚动"""
+    模块整体固定等高，列表展示该源抓到的全部条目，超出高度时在列表内部滚动。
+    信息源名称是可点击超链接，新标签打开该源对应页面（聚合源无地址时显示纯文本）"""
     domain = _SOURCE_FAVICON.get(source_name, "")
     icon_html = (f'<img src="https://favicon.im/{domain}" '
                  f'class="w-5 h-5 rounded object-contain" onerror="this.style.display=\'none\'" alt="">')
+    home_url = _SOURCE_HOME.get(source_name, "")
+    if home_url:
+        name_html = (f'<a href="{html.escape(home_url, quote=True)}" target="_blank" '
+                     f'rel="noopener noreferrer" title="打开 {source_name} 页面" '
+                     f'class="text-sm font-bold text-slate-100 hover:text-amber-400 transition-colors">'
+                     f'{source_name}</a>')
+    else:
+        name_html = f'<span class="text-sm font-bold text-slate-100">{source_name}</span>'
     update_time = NOW.strftime("%m月%d日 %H:%M")
     rows = []
     for idx, it in enumerate(items, 1):
@@ -797,7 +820,7 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
       <div class="flex items-center justify-between mb-3 pb-2 border-b border-slate-800/60 shrink-0">
         <div class="flex items-center gap-2">
           {icon_html}
-          <span class="text-sm font-bold text-slate-100">{source_name}</span>
+          {name_html}
           <span class="text-[10px] text-slate-500 bg-slate-800/70 rounded px-1.5 py-0.5">{len(items)} 条</span>
         </div>
         <span class="text-[11px] text-slate-500">{update_time}</span>
