@@ -899,9 +899,11 @@ _SOURCE_FAVICON = {
     "今日头条":  "toutiao.com",
     "微博热搜":  "weibo.com",
     "百度热搜":  "baidu.com",
+    "BBC":      "bbc.com",
     "财经要点":  "eastmoney.com",
     "36kr":      "36kr.com",
     "量子位":    "qbitai.com",
+    "a16z":     "a16z.com",
     "ai-bot":    "ai-bot.cn",
     "白鲸出海":  "baijing.cn",
     "GameLook":  "gamelook.com.cn",
@@ -914,8 +916,10 @@ _SOURCE_HOME = {
     "今日头条":  "https://www.toutiao.com/",
     "微博热搜":  "https://s.weibo.com/top/summary",
     "百度热搜":  "https://top.baidu.com/board?tab=realtime",
+    "BBC":      "https://www.bbc.com/news",
     "36kr":      "https://www.36kr.com/",
     "量子位":    "https://www.qbitai.com/",
+    "a16z":     "https://a16z.com/",
     "ai-bot":    "https://ai-bot.cn/daily-ai-news/",
     "白鲸出海":  "https://www.baijing.cn/",
     "GameLook":  "http://www.gamelook.com.cn/",
@@ -958,19 +962,19 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
                       f'▲ {html.escape(str(votes))}</span>') if votes else ""
         desc_html = f'<div class="text-xs text-slate-500 mt-0.5 truncate">{html.escape(str(desc)[:80])}</div>' if desc else ""
         hot_badge = f'<span class="text-[10px] text-slate-600 ml-auto shrink-0">{html.escape(str(hot))}</span>' if hot and not desc else ""
-        # 仅 Product Hunt 板块支持 hover 展开中文介绍
-        is_ph = source_name == "Product Hunt"
-        intro = (it.get("summary") or "").strip() if is_ph else ""
+        # Product Hunt / a16z 板块支持 hover 展开正文（PH 中文介绍 / a16z 完整原文）
+        expandable = source_name in ("Product Hunt", "a16z")
+        intro = (it.get("content") or it.get("summary") or "").strip() if expandable else ""
         intro_expand = ""
         if intro:
             intro_expand = (
                 f'<div class="max-h-0 overflow-hidden transition-all duration-200 '
                 f'group-hover:max-h-48 group-hover:overflow-y-auto group-hover:scroll-thin '
-                f'text-xs text-slate-400 leading-relaxed mt-1 break-words">'
+                f'text-xs text-slate-400 leading-relaxed mt-1 break-words whitespace-pre-line">'
                 f'{html.escape(intro)}</div>'
             )
-        link_extra = ' title="{}"'.format(html.escape(intro or title, quote=True)) if is_ph else ""
-        group_cls = " group" if is_ph else ""
+        link_extra = ' title="{}"'.format(html.escape(intro or title, quote=True)) if expandable else ""
+        group_cls = " group" if expandable else ""
         rows.append(f"""
           <a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener noreferrer"
              class="block py-2.5 border-b border-slate-800/40 last:border-0 hover:bg-slate-800/30 rounded px-1 -mx-1 transition-colors{group_cls}"{link_extra}>
@@ -1025,7 +1029,7 @@ def render_hotboard_page(data: dict) -> str:
         + _hot_section("游戏与产品", "🎮", data.get("gaming", {}))
     )
     return _info_page_shell("今日热榜", "🔥", "index.html",
-                            "今日头条 / 微博热搜 / 36kr / 量子位 / ai-bot / GameLook / Product Hunt / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
+                            "今日头条 / 微博热搜 / 百度热搜 / BBC / 36kr / 量子位 / a16z / ai-bot / GameLook / Product Hunt / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
                             sections, NOW.strftime("%Y-%m-%d %H:%M"))
 
 

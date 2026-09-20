@@ -798,6 +798,88 @@ def fetch_36kr_rss(limit: int = 20, time_rule: str = "today_yesterday") -> List[
         return []
 
 
+def fetch_a16z(limit: int = 20, time_rule: str = "today_yesterday") -> List[dict]:
+    """a16z（Andreessen Horowitz）官网深度文章抓取。
+
+    该站 2025 改版后关闭了 RSS 与 WP REST API（/feed/、/wp-json/ 均 404），
+    但 Yoast 生成的 sitemap 仍可访问：sitemap_index.xml → 各 post-sitemapN.xml 分片，
+    每个条目含 loc 与 lastmod（新文章的 lastmod 即发布时间；旧分片是迁移时间戳）。
+    流程：汇总全部分片 → 按 lastmod 取最新若干候选 → 逐篇打开文章页，
+    从 JSON-LD 提取精确的 datePublished / headline，再从 div.js-article-content
+    提取完整正文（仅保留有实质内容的段落，正文过薄的播客/视频页丢弃）→
+    按时间窗口策略过滤（该源为周更，配置为近 7 天窗口）后截断。"""
+    try:
+        resp = SESSION.get("https://a16z.com/sitemap_index.xml", timeout=15)
+        resp.raise_for_status()
+        iroot = ET.fromstring(resp.content)
+    except Exception as e:
+        print(f"  [a16z] sitemap 索引抓取失败: {e}")
+        return []
+    ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+    shard_urls = [s.findtext(f"{ns}loc") for s in iroot.findall(f"{ns}sitemap")
+                  if "post-sitemap" in (s.findtext(f"{ns}loc") or "")]
+    candidates: List[tuple] = []
+    for su in shard_urls:
+        try:
+            page = SESSION.get(su, timeout=20)
+            page.raise_for_status()
+            sroot = ET.fromstring(page.content)
+            for u in sroot.findall(f"{ns}url"):
+                loc = u.findtext(f"{ns}loc")
+                if loc:
+                    candidates.append((u.findtext(f"{ns}lastmod") or "", loc))
+        except Exception as e:
+            print(f"  [a16z] 分片 {su} 抓取失败: {e}")
+    # 最新分片的 2026 时间戳自然排在旧分片 2023 迁移戳之前；只核对前 12 个候选
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    items: List[dict] = []
+    for _, loc in candidates[:12]:
+        try:
+            art = SESSION.get(loc, timeout=20)
+            art.raise_for_status()
+            text = art.text
+            pub = (re.findall(r'"datePublished"\s*:\s*"([^"]+)"', text) or [""])[0]
+            title = (re.findall(r'"headline"\s*:\s*"([^"]+)"', text)
+                     or re.findall(r"<title>([^|<]+)", text) or [""])[0]
+            title = html.unescape(title).strip()
+            if not title:
+                continue
+            # 完整正文：div.js-article-content 内全部段落，剔除脚本/图片等非正文节点
+            asoup = BeautifulSoup(text, "html.parser")
+            body = asoup.select_one("div.js-article-content")
+            if body is None:
+                continue
+            for junk in body.select("script, style, figure, noscript, aside"):
+                junk.decompose()
+            paras = []
+            for p in body.find_all("p"):
+                t = re.sub(r"\s+", " ", p.get_text(" ", strip=True))
+                if t and len(t) >= 10:
+                    paras.append(t)
+            if sum(len(p) for p in paras) < 300:
+                continue  # 正文过薄：多为播客/视频/专题页，不计入
+            content = "\n\n".join(paras)
+            if len(content) > 6000:
+                content = content[:6000].rstrip() + "…"
+            try:
+                dt = datetime.fromisoformat(pub) if pub else None
+            except ValueError:
+                dt = None
+            items.append({
+                "title": title,
+                "url": loc,
+                "summary": paras[0][:200],          # 列表展示的实质摘要
+                "content": content,                 # 完整正文（hover 展开）
+                "time": dt.astimezone(CN_TZ) if dt is not None else None,
+                "source": "a16z",
+            })
+        except Exception:
+            continue
+    items = filter_by_time_rule(items, time_rule, "a16z")[:limit]
+    print(f"  [a16z] {len(items)} 条")
+    return items
+
+
 def _parse_baijing_reltime(text: str) -> Optional[datetime]:
     """解析白鲸首页接口的相对时间（'刚刚'/'N 分钟前'/'N 小时前'/'N 天前'）
     为北京时间 datetime；无法识别时返回 None"""
@@ -985,11 +1067,14 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
     """收集今日热榜页数据：社会舆情（头条/微博/财经要点）、科技动态（36kr/量子位/ai-bot）、
     游戏与产品（GameLook/PH/GitHub Trending），按板块分组返回。
     每个源的时间策略与条数统一从 config.SOURCE_RULES 读取，互不影响"""
-    # 社会舆情板块：头条 + 微博 + 百度（均为实时榜单）+ 财经要点（今天/昨天规则）
+    # 社会舆情板块：头条 + 微博 + 百度（均为实时榜单）+ BBC 当日头条 + 财经要点（今天/昨天规则）
     social = {
         "今日头条": fetch_toutiao_hot(source_rule("今日头条", "limit", 20)),
         "微博热搜": fetch_weibo_hot(source_rule("微博热搜", "limit", 20)),
         "百度热搜": fetch_baidu_hot(source_rule("百度热搜", "limit", 20)),
+        "BBC": fetch_rss("https://feeds.bbci.co.uk/news/rss.xml", "BBC",
+                         source_rule("BBC", "limit", 20),
+                         source_rule("BBC", "time_rule", "today_yesterday")),
     }
     if market_headlines:
         headlines = (market_headlines.get("domestic") or []) + (market_headlines.get("global") or [])
@@ -1012,6 +1097,8 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
         "量子位": fetch_rss("https://www.qbitai.com/feed", "量子位",
                            source_rule("量子位", "limit", 20),
                            source_rule("量子位", "time_rule", "today_yesterday")),
+        "a16z": fetch_a16z(source_rule("a16z", "limit", 20),
+                           source_rule("a16z", "time_rule", "today_yesterday")),
         "ai-bot": fetch_aibot_news(source_rule("ai-bot", "limit", 20)),
         "白鲸出海": fetch_baijing_home(source_rule("白鲸出海", "limit", 20)),
     }
