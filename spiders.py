@@ -508,141 +508,84 @@ def translate_en2zh(text: str) -> str:
 
 
 def fetch_ph_leaderboard(limit: int = 20) -> List[dict]:
-    """抓取 Product Hunt 昨日每日榜单（严格按榜单排名，DOM 顺序即名次）。
-    用 Playwright 无头浏览器渲染 leaderboard 页面，只提取主榜单容器内首行带
-    "N. 产品名"排名前缀的 section 卡片（页脚推荐/嵌入文章无排名前缀，天然排除）；
-    若 Playwright 不可用或抓取失败，回退到官方 RSS feed（数据非榜单，仅作降级）。"""
+    """抓取 Product Hunt 昨日每日榜单（中文数据）。
+    数据源：开源项目 ViggoZ/producthunt-daily-hot 每日生成的 Markdown，
+    直接拉取 raw.githubusercontent.com 上的 data/producthunt-daily-YYYY-MM-DD.md。
+    内容已包含中文标语/介绍/关键词/票数，无需再翻译；时间规则沿用昨日榜。"""
     yesterday = datetime.now(CN_TZ) - timedelta(days=1)
-    url = (f"https://www.producthunt.com/leaderboard/daily/"
-           f"{yesterday.year}/{yesterday.month}/{yesterday.day}")
+    date_str = yesterday.strftime("%Y-%m-%d")
+    items = _fetch_ph_markdown(date_str)
+    # 当日文件尚未生成（GitHub Action 每日 15:01 BJ 才产出）时，回退到前一天
+    if not items:
+        prev = (yesterday - timedelta(days=1)).strftime("%Y-%m-%d")
+        print(f"  [PH榜单] {date_str} 数据未生成，尝试 {prev}")
+        items = _fetch_ph_markdown(prev)
+        date_str = prev
+    if items:
+        print(f"  [PH榜单] GitHub raw 抓取 {len(items)} 条（{date_str} 榜单），"
+              f"榜首: {items[0]['title']}（{items[0].get('votes')} 票）")
+    return items[:limit]
+
+
+def _fetch_ph_markdown(date_str: str) -> List[dict]:
+    """从 GitHub raw 拉取指定日期的 PH 每日 Markdown 并解析为榜单条目。
+    返回空列表表示文件不存在或抓取失败。"""
+    raw_url = (f"https://raw.githubusercontent.com/ViggoZ/producthunt-daily-hot/main/"
+               f"data/producthunt-daily-{date_str}.md")
     try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        print("  [PH榜单] playwright 未安装，回退 RSS feed")
-        return _ph_rss_fallback(limit)
-
-    items: List[dict] = []
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True,
-                                        args=["--no-sandbox", "--disable-setuid-sandbox"])
-            context = browser.new_context(
-                user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                            "Chrome/124.0.0.0 Safari/537.36"),
-                viewport={"width": 1920, "height": 1080},
-                locale="en-US",
-            )
-            page = context.new_page()
-            page.goto(url, timeout=45000, wait_until="domcontentloaded")
-            # 轮询等待内容渲染完成（避开 Cloudflare 挑战页）
-            for _ in range(20):
-                time.sleep(1.5)
-                content = page.content()
-                if "Just a moment" not in content and len(content) > 50000:
-                    break
-            else:
-                raise RuntimeError("页面未在预期时间内渲染完成或被 Cloudflare 拦截")
-
-            # 在浏览器端提取主榜单：榜单产品均为 <section> 卡片且首行形如 "1. 产品名"，
-            # 同属一个列表容器（div.flex.grow.flex-col）。页脚推荐/嵌入文章中的产品
-            # 没有排名前缀，按"排名卡片最多的父容器"分组即可精确锁定主榜单，
-            # DOM 顺序即榜单排名（不要再按票数重排，票数接近时会排错）
-            data = page.evaluate(r"""() => {
-                const sections = Array.from(document.querySelectorAll('section'));
-                const firstLine = s => ((s.innerText || '').split('\n')[0] || '').trim();
-                const isRank = s => /^\d+\.\s+\S/.test(firstLine(s));
-                const groups = {};
-                sections.forEach(s => {
-                    if (!isRank(s)) return;
-                    const p = s.parentElement;
-                    const key = (p && p.tagName) ? (p.tagName + '|' + (typeof p.className === 'string' ? p.className : '')) : 'none';
-                    (groups[key] = groups[key] || {list: []}).list.push(s);
-                });
-                let best = null;
-                Object.values(groups).forEach(g => { if (!best || g.list.length > best.list.length) best = g; });
-                if (!best) return [];
-                return best.list.map(s => {
-                    const lines = (s.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
-                    const mm = (lines[0] || '').match(/^(\d+)\.\s*(.*)$/);
-                    // 卡片末尾两个独立数字：投票数、评论数
-                    const trailingNums = [];
-                    for (let i = lines.length - 1; i >= 1; i--) {
-                        if (/^\d[\d,]*$/.test(lines[i])) trailingNums.unshift(lines[i]);
-                        else if (trailingNums.length) break;
-                    }
-                    const a = s.querySelector('a[href*="/products/"], a[href*="/posts/"]');
-                    let href = a ? a.getAttribute('href') : '';
-                    if (href && href.startsWith('/')) href = 'https://www.producthunt.com' + href;
-                    return {
-                        rank: mm ? +mm[1] : 0,
-                        name: mm ? mm[2].trim() : lines[0],
-                        tagline: lines[1] || '',
-                        votes: trailingNums[0] || '',
-                        comments: trailingNums[1] || '',
-                        url: href,
-                    };
-                }).filter(x => x.name);
-            }""")
-
-            # 主榜单提取为空（页面结构变更或渲染异常）：直接放弃，外层回退 RSS
-            browser.close()
-            if not data:
-                raise RuntimeError("页面解析未提取到主榜单数据")
-
-            # 过滤异常排名并按榜单排名升序（DOM 顺序），取前 limit 条
-            data = [d for d in data if isinstance(d.get("rank"), int) and d["rank"] >= 1]
-            data.sort(key=lambda d: d["rank"])
-            print(f"  [PH榜单] 主榜单提取 {len(data)} 条，榜首: "
-                  f"{data[0].get('name')}（{data[0].get('votes')} 票）")
-            for d in data[:limit]:
-                tagline_en = d.get("tagline") or ""
-                items.append({
-                    "title": d["name"],
-                    "url": d["url"],
-                    "tagline": translate_en2zh(tagline_en),
-                    "tagline_en": tagline_en,
-                    "summary": tagline_en,
-                    "votes": d.get("votes", ""),
-                    "source": "Product Hunt",
-                    "time": yesterday,
-                })
-            print(f"  [PH榜单] Playwright 抓取 {len(items)} 条（昨日 {yesterday.strftime('%Y-%m-%d')} 榜单）")
+        resp = SESSION.get(raw_url, timeout=20)
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
     except Exception as exc:
-        print(f"  [PH榜单] Playwright 抓取失败: {exc}，回退 RSS feed")
-        return _ph_rss_fallback(limit)
+        print(f"  [PH榜单] GitHub raw 请求失败 ({date_str}): {exc}")
+        return []
+    return _parse_ph_markdown(resp.text, date_str)
+
+
+def _parse_ph_markdown(md_text: str, date_str: str) -> List[dict]:
+    """解析 producthunt-daily-hot 生成的 Markdown，提取榜单产品（排名 / 名称 /
+    中文标语 / 中文介绍 / 票数 / 产品官网链接）。源数据已为中文，无需翻译。"""
+    items: List[dict] = []
+    # 每个产品以 "## [N. 名称](PH链接)" 开头，按此切分
+    blocks = re.split(r"\n##\s+\[", md_text)
+    base_date = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=CN_TZ)
+    for block in blocks[1:]:
+        head = re.match(r"(\d+)\.\s+([^\]]+)\]\(([^)]+)\)", block)
+        if not head:
+            continue
+        rank = int(head.group(1))
+        name = head.group(2).strip()
+        ph_url = head.group(3).strip()
+        # 中文标语
+        tagline_m = re.search(r"\*\*标语\*\*[：:]\s*(.+)", block)
+        tagline = tagline_m.group(1).strip() if tagline_m else ""
+        # 中文介绍
+        intro_m = re.search(r"\*\*介绍\*\*[：:]\s*(.+)", block)
+        intro = intro_m.group(1).strip() if intro_m else ""
+        # 票数（形如 "🔺506"）
+        votes_m = re.search(r"\*\*票数\*\*[：:]\s*🔺?\s*([\d,]+)", block)
+        votes = votes_m.group(1).replace(",", "") if votes_m else ""
+        # 产品官网（优先于 PH 链接）
+        site_m = re.search(r"\*\*产品网站\*\*[：:]\s*\[立即访问\]\(([^)]+)\)", block)
+        site_url = site_m.group(1).strip() if site_m else ph_url
+        items.append({
+            "title": name,
+            "url": site_url,
+            "tagline": tagline,        # 中文标语
+            "tagline_en": "",          # 源数据无英文标语，留空
+            "summary": intro,          # 中文介绍（用于标签生成）
+            "votes": votes,
+            "source": "Product Hunt",
+            "time": base_date,
+        })
     return items
-
-
-def _ph_rss_fallback(limit: int = 20) -> List[dict]:
-    """PH 数据降级方案：从官方 RSS feed 取最新产品（非榜单排序，仅作保底）。
-    PH 属榜单类源（realtime），不按今天/昨天过滤"""
-    ph_items = dedupe_and_sort(
-        fetch_rss("https://www.producthunt.com/feed", "Product Hunt", 30,
-                  time_rule="realtime"), limit)
-    for it in ph_items:
-        t = it["title"]
-        for sep in (": ", " – ", " - "):
-            if sep in t:
-                name, tagline = t.split(sep, 1)
-                it["title"], it["tagline"] = name.strip(), tagline.strip()
-                break
-        else:
-            it["tagline"] = (it["summary"] or "")[:60]
-        it["tagline_en"] = it["tagline"]
-        it["tagline"] = translate_en2zh(it["tagline"])
-    return ph_items
 
 
 def build_global_data() -> dict:
     """收集海外产品页数据：PH 独立成栏；Steam/GameLook 归游戏类；白鲸/HN/TechCrunch 按规则分类"""
-    # PH 榜单：用 Playwright 抓取昨日每日榜单，失败时回退 RSS
+    # PH 榜单：从 producthunt-daily-hot 开源项目拉取昨日中文榜单（标语/介绍已为中文）
     ph_items = fetch_ph_leaderboard(20)
-    # 翻译 tagline 为中文（Playwright 路径也需翻译；RSS 回退路径已在 _ph_rss_fallback 内处理）
-    for it in ph_items:
-        if "tagline_en" not in it and it.get("tagline"):
-            it["tagline_en"] = it["tagline"]
-            it["tagline"] = translate_en2zh(it["tagline"])
     items = (fetch_rss("https://store.steampowered.com/feeds/newreleases.xml", "Steam 新品",
                        source_rule("Steam 新品", "limit", 20), source_rule("Steam 新品", "time_rule", "today_yesterday"))
              + fetch_rss("http://www.gamelook.com.cn/feed", "GameLook",

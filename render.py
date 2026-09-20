@@ -756,9 +756,20 @@ def _feed_item_html(item: dict) -> str:
       </a>"""
     if item.get("tagline"):
         en_tip = html.escape(item.get("tagline_en", ""), quote=True)
+        # PH 产品：hover 条目时在下方内联展开中文介绍（来自数据源的「介绍」字段）
+        summary = (item.get("summary") or "").strip()
+        intro_expand = ""
+        if summary:
+            intro_expand = (
+                f'<div class="max-h-0 overflow-hidden transition-all duration-200 '
+                f'group-hover:max-h-48 group-hover:overflow-y-auto group-hover:scroll-thin '
+                f'text-[11px] text-slate-400 leading-relaxed mt-1 break-words">'
+                f'{html.escape(summary)}</div>'
+            )
         return f"""
-    <div class="border-b border-slate-800/50 last:border-0">{row}
+    <div class="group border-b border-slate-800/50 last:border-0">{row}
       <div class="text-[11px] text-slate-500 pl-[72px] pb-2 -mt-1 pr-2" title="{en_tip}">↳ {html.escape(item["tagline"])}</div>
+      <div class="pl-[72px] pr-2">{intro_expand}</div>
     </div>"""
     return row
 
@@ -947,9 +958,22 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
                       f'▲ {html.escape(str(votes))}</span>') if votes else ""
         desc_html = f'<div class="text-xs text-slate-500 mt-0.5 truncate">{html.escape(str(desc)[:80])}</div>' if desc else ""
         hot_badge = f'<span class="text-[10px] text-slate-600 ml-auto shrink-0">{html.escape(str(hot))}</span>' if hot and not desc else ""
+        # 仅 Product Hunt 板块支持 hover 展开中文介绍
+        is_ph = source_name == "Product Hunt"
+        intro = (it.get("summary") or "").strip() if is_ph else ""
+        intro_expand = ""
+        if intro:
+            intro_expand = (
+                f'<div class="max-h-0 overflow-hidden transition-all duration-200 '
+                f'group-hover:max-h-48 group-hover:overflow-y-auto group-hover:scroll-thin '
+                f'text-xs text-slate-400 leading-relaxed mt-1 break-words">'
+                f'{html.escape(intro)}</div>'
+            )
+        link_extra = ' title="{}"'.format(html.escape(intro or title, quote=True)) if is_ph else ""
+        group_cls = " group" if is_ph else ""
         rows.append(f"""
           <a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener noreferrer"
-             class="block py-2.5 border-b border-slate-800/40 last:border-0 hover:bg-slate-800/30 rounded px-1 -mx-1 transition-colors">
+             class="block py-2.5 border-b border-slate-800/40 last:border-0 hover:bg-slate-800/30 rounded px-1 -mx-1 transition-colors{group_cls}"{link_extra}>
             <div class="flex items-start gap-2">
               <span class="text-sm font-bold text-slate-600 shrink-0 mt-0.5 w-5 text-center">{idx}</span>
               <div class="flex-1 min-w-0">
@@ -959,6 +983,7 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
                   {hot_badge}
                 </div>
                 {desc_html}
+                {intro_expand}
               </div>
             </div>
           </a>""")
