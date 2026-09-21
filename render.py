@@ -899,6 +899,7 @@ _SOURCE_FAVICON = {
     "今日头条":  "toutiao.com",
     "微博热搜":  "weibo.com",
     "百度热搜":  "baidu.com",
+    "Reddit":     "reddit.com",
     "BBC":      "bbc.com",
     "财经要点":  "eastmoney.com",
     "36kr":      "36kr.com",
@@ -906,6 +907,7 @@ _SOURCE_FAVICON = {
     "a16z":     "a16z.com",
     "ai-bot":    "ai-bot.cn",
     "白鲸出海":  "baijing.cn",
+    "微信公众号": "weixin.qq.com",
     "GameLook":  "gamelook.com.cn",
     "Product Hunt": "producthunt.com",
     "GitHub Trending": "github.com",
@@ -916,12 +918,14 @@ _SOURCE_HOME = {
     "今日头条":  "https://www.toutiao.com/",
     "微博热搜":  "https://s.weibo.com/top/summary",
     "百度热搜":  "https://top.baidu.com/board?tab=realtime",
+    "Reddit":     "https://www.reddit.com/r/all/top/?t=day",
     "BBC":      "https://www.bbc.com/news",
     "36kr":      "https://www.36kr.com/",
     "量子位":    "https://www.qbitai.com/",
     "a16z":     "https://a16z.com/",
     "ai-bot":    "https://ai-bot.cn/daily-ai-news/",
     "白鲸出海":  "https://www.baijing.cn/",
+    "微信公众号": "https://weixin.sogou.com/",
     "GameLook":  "http://www.gamelook.com.cn/",
     "Product Hunt": "https://www.producthunt.com/",
     "GitHub Trending": "https://github.com/trending",
@@ -1029,7 +1033,7 @@ def render_hotboard_page(data: dict) -> str:
         + _hot_section("游戏与产品", "🎮", data.get("gaming", {}))
     )
     return _info_page_shell("今日热榜", "🔥", "index.html",
-                            "今日头条 / 微博热搜 / 百度热搜 / BBC / 36kr / 量子位 / a16z / ai-bot / GameLook / Product Hunt / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
+                            "今日头条 / 微博热搜 / 百度热搜 / Reddit / BBC / 36kr / 量子位 / a16z / ai-bot / 微信公众号 / GameLook / Product Hunt / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
                             sections, NOW.strftime("%Y-%m-%d %H:%M"))
 
 

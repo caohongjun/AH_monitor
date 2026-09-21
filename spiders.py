@@ -13,7 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from config import (CN_TZ, NOW, TODAY, TODAY_START, MAX_EVENTS, OUTPUT_HTML,
-                    QUOTE_BATCH, BROWSER_HEADERS, KEYWORD_GROUPS, TAG_COLORS,
+                    QUOTE_BATCH, KEYWORD_GROUPS, TAG_COLORS,
                     SOURCE_STATS, HIGH_RISK_TAGS, MARKET_CORE_KEYWORDS,
                     MARKET_KEYWORDS, MARKET_GLOBAL_KEYWORDS, BRIEF_GROUP_MAX,
                     HEADLINES_MAX, NAV_ITEMS, WATCHLIST, WATCH_RELATED_MAX,
@@ -731,6 +731,177 @@ def fetch_baidu_hot(limit: int = 20) -> List[dict]:
         return []
 
 
+# Reddit RSS：r/all 每日热门（top?t=day），未登录即可访问，返回 Atom XML
+_REDDIT_RSS_URL = "https://www.reddit.com/r/all/top/.rss?t=day&limit={cap}"
+# Reddit 要求独特的 User-Agent，推荐格式：平台:应用名:版本 (by /u/用户名)
+_REDDIT_UA = "python:ah-monitor-hotlist:v1.0 (by /u/ah_monitor_reader)"
+
+
+def fetch_reddit(limit: int = 20) -> List[dict]:
+    """Reddit r/all 每日热门讨论：通过官方 RSS（Atom）接口获取，免登录。
+    取当日热度最高的帖子，标题译为中文，subreddit 作为来源标签展示。
+    Reddit 未认证请求有速率限制，内置重试；RSS 不含点赞数，subreddit 作为副标题展示。"""
+    cap = max(30, limit * 2)
+    url = _REDDIT_RSS_URL.format(cap=cap)
+    resp = None
+    for attempt in range(3):
+        try:
+            resp = SESSION.get(url, headers={"User-Agent": _REDDIT_UA,
+                                              "Accept": "application/atom+xml, application/xml"},
+                                timeout=15)
+            if resp.status_code == 200 and resp.content:
+                break
+            # 429/403 等限流：指数退避重试
+            time.sleep(2 * (attempt + 1))
+        except Exception:
+            time.sleep(2 * (attempt + 1))
+    if resp is None or resp.status_code != 200 or not resp.content:
+        code = resp.status_code if resp is not None else "no-response"
+        print(f"  [Reddit] RSS 抓取失败: HTTP {code}")
+        return []
+    try:
+        root = ET.fromstring(resp.content)
+    except Exception as e:
+        print(f"  [Reddit] XML 解析失败: {e}")
+        return []
+    atom = "{http://www.w3.org/2005/Atom}"
+    items = []
+    for entry in root.findall(f"{atom}entry"):
+        title = (entry.findtext(f"{atom}title") or "").strip()
+        if not title:
+            continue
+        link_el = entry.find(f"{atom}link")
+        link = (link_el.get("href") or "").strip() if link_el is not None else ""
+        # subreddit 在 category 的 label 属性中，如 "r/pics"
+        cat_el = entry.find(f"{atom}category")
+        subreddit = (cat_el.get("label") or "").strip() if cat_el is not None else ""
+        # 标题译为中文，原文保留作补充；翻译失败则用原文
+        zh_title = translate_en2zh(title)
+        display = zh_title if zh_title and zh_title != title else title
+        items.append({
+            "title": display,
+            "url": link,
+            "tagline": subreddit,  # subreddit 作为副标题展示（如 r/pics）
+            "source": "Reddit",
+        })
+        if len(items) >= limit:
+            break
+    print(f"  [Reddit] {len(items)} 条（r/all 每日热门）")
+    return items
+
+
+# 热门 AI / 产品 类微信公众号（科技动态板块补充源）
+# 选取未被其他源覆盖的账号：机器之心/新智元(AI)、人人都是产品经理(产品)、差评(科技评论)、
+# 笔记侠(商业笔记)、游戏那点事(游戏资讯)
+_WECHAT_ACCOUNTS = ["机器之心", "新智元", "人人都是产品经理", "差评", "笔记侠", "游戏那点事"]
+
+
+def fetch_wechat(limit: int = 15) -> List[dict]:
+    """微信公众号热门文章：通过搜狗微信文章搜索(type=2)按账号名检索，每个公众号直接取其
+    最新一篇文章（无时间窗过滤，避免搜狗索引滞后导致板块长期为空）。
+    链接为搜狗跳转页，点击后由 JS 跳转至 mp.weixin.qq.com 原文。
+    搜狗反爬较严：每个账号用独立 session（避开共享 cookie 累积触发风控），
+    请求间加 3 秒间隔，0 结果时退避重试最多 3 次。
+    注意：必须用 Mac UA，搜狗微信搜索会把 Windows UA 重定向到搜狗首页（无微信结果）。"""
+    year = str(TODAY.year)
+    # 搜狗微信搜索对 UA 敏感：Windows UA 会被重定向到搜狗首页，必须用 Mac UA
+    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    candidates: List[dict] = []
+    seen_titles = set()
+    per_query_cap = 8  # 每个查询多取几条候选，便于找到该账号真正最新一篇
+    # 当前年月，用于构造"账号+当月"查询，提高命中当月最新文章的概率
+    month_query = f"{year}年{NOW.month}月"
+    for account in _WECHAT_ACCOUNTS:
+        # 每个账号用独立 session，避免共享 cookie 累积触发搜狗风控
+        acc_session = requests.Session()
+        acc_session.headers.update({"User-Agent": ua})
+        # 三组查询合并去重：当月 > 当年 > 账号名，覆盖面递增
+        for query in (f"{account} {month_query}", f"{account} {year}", account):
+            lis: list = []
+            # 0 结果时退避重试最多 1 次（搜狗常对连续请求返回空页）
+            # 注意：重试次数不宜多，6 账号 × 3 查询 × N 重试 容易触发搜狗 IP 风控
+            for attempt in range(2):
+                try:
+                    resp = acc_session.get(
+                        "https://weixin.sogou.com/weixin",
+                        params={"type": 2, "query": query, "ie": "utf8"},
+                        timeout=12,
+                        verify=False,
+                    )
+                    resp.raise_for_status()
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    lis = soup.select(".news-list li")
+                    if lis:
+                        break  # 拿到结果，跳出重试
+                except Exception as e:
+                    print(f"  [微信公众号] 搜索 '{query}' 失败(第{attempt+1}次): {e}")
+                if attempt < 1:
+                    time.sleep(3)  # 3s 退避
+            got = 0
+            for it in lis:
+                if got >= per_query_cap:
+                    break
+                acc_el = it.select_one(".all-time-y2")
+                acc = (acc_el.get_text(strip=True) if acc_el else "").strip()
+                # 只保留该账号发布的文章（搜狗会混入提到该账号名的其他文章）
+                if acc != account:
+                    continue
+                # 解析发布时间：搜狗把时间戳塞在 .s2 的 <script> timeConvert('xxx') </script> 中
+                # 注意：BeautifulSoup 的 get_text() 会丢弃 <script> 内容，必须直接读 script.string
+                s2_el = it.select_one(".s2")
+                sc_el = s2_el.find("script") if s2_el else None
+                sc_text = (sc_el.string if sc_el and sc_el.string
+                           else (s2_el.decode_contents() if s2_el else ""))
+                m_ts = re.search(r"timeConvert\('(\d+)'\)", sc_text)
+                if not m_ts:
+                    continue
+                pub_dt = datetime.fromtimestamp(int(m_ts.group(1)), tz=CN_TZ)
+                title_el = it.select_one("h3 a")
+                if not title_el:
+                    continue
+                # 标题含 <em> 高亮标签会插入空格：先去掉汉字间多余空格，再去掉账号名重复
+                raw_title = title_el.get_text(" ", strip=True)
+                raw_title = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", raw_title)
+                raw_title = re.sub(r"\s+", " ", raw_title).strip()
+                title = raw_title.replace(account, "").strip(" ，,")
+                if not title or title in seen_titles:
+                    continue
+                seen_titles.add(title)
+                href = title_el.get("href", "")
+                url = ("https://weixin.sogou.com" + href) if href.startswith("/link") else href
+                summary_el = it.select_one("p.txt-info")
+                summary = ""
+                if summary_el:
+                    summary = summary_el.get_text(" ", strip=True)
+                    summary = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", summary)
+                    summary = re.sub(r"\s+", " ", summary).strip()
+                candidates.append({
+                    "title": title,
+                    "url": url,
+                    "summary": summary[:120],
+                    "tagline": account,  # 公众号名作为来源标签
+                    "source": "微信公众号",
+                    "pub_dt": pub_dt,  # 发布时间（北京时间），用于排序
+                })
+                got += 1
+            # 查询间间隔，避免触发搜狗限流
+            time.sleep(3)
+    # 时间倒序，便于"每账号取最新一篇"的去重
+    candidates.sort(key=lambda x: x["pub_dt"], reverse=True)
+    # 每个公众号最多贡献 1 条（最新一篇），让更多账号有露脸机会
+    seen_accounts: set = set()
+    items: List[dict] = []
+    for x in candidates:
+        if x["tagline"] in seen_accounts:
+            continue
+        seen_accounts.add(x["tagline"])
+        items.append(x)
+    for x in items:
+        x.pop("pub_dt", None)  # 排序后移除内部字段，避免污染下游渲染
+    print(f"  [微信公众号] {len(items)} 条（{len(_WECHAT_ACCOUNTS)} 个账号，每账号取最新 1 篇）")
+    return items[:limit]
+
+
 def fetch_github_trending(limit: int = 25) -> List[dict]:
     """GitHub Trending：爬取 trending 页面，提取仓库名/描述/今日 star 数。
     带 3 次重试，应对网络抖动；选择器做了兼容以适配 GitHub 页面结构变更。"""
@@ -1067,11 +1238,12 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
     """收集今日热榜页数据：社会舆情（头条/微博/财经要点）、科技动态（36kr/量子位/ai-bot）、
     游戏与产品（GameLook/PH/GitHub Trending），按板块分组返回。
     每个源的时间策略与条数统一从 config.SOURCE_RULES 读取，互不影响"""
-    # 社会舆情板块：头条 + 微博 + 百度（均为实时榜单）+ BBC 当日头条 + 财经要点（今天/昨天规则）
+    # 社会舆情板块：头条 + 微博 + 百度（均为实时榜单）+ Reddit 每日热门 + BBC 当日头条 + 财经要点（今天/昨天规则）
     social = {
         "今日头条": fetch_toutiao_hot(source_rule("今日头条", "limit", 20)),
         "微博热搜": fetch_weibo_hot(source_rule("微博热搜", "limit", 20)),
         "百度热搜": fetch_baidu_hot(source_rule("百度热搜", "limit", 20)),
+        "Reddit": fetch_reddit(source_rule("Reddit", "limit", 20)),
         "BBC": fetch_rss("https://feeds.bbci.co.uk/news/rss.xml", "BBC",
                          source_rule("BBC", "limit", 20),
                          source_rule("BBC", "time_rule", "today_yesterday")),
@@ -1101,6 +1273,7 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
                            source_rule("a16z", "time_rule", "today_yesterday")),
         "ai-bot": fetch_aibot_news(source_rule("ai-bot", "limit", 20)),
         "白鲸出海": fetch_baijing_home(source_rule("白鲸出海", "limit", 20)),
+        "微信公众号": fetch_wechat(source_rule("微信公众号", "limit", 15)),
     }
     # 游戏与产品板块
     gaming = {

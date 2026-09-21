@@ -138,6 +138,7 @@ SOURCE_RULES = {
     "今日头条":       {"time_rule": "realtime", "limit": 20},
     "微博热搜":       {"time_rule": "realtime", "limit": 20},
     "百度热搜":       {"time_rule": "realtime", "limit": 20},
+    "Reddit":         {"time_rule": "realtime", "limit": 20},
     "BBC":          {"time_rule": "today_yesterday", "limit": 20},
     "财经要点":       {"time_rule": "today_yesterday", "limit": 20},
     # —— 今日热榜 · 科技动态 ——
@@ -146,6 +147,7 @@ SOURCE_RULES = {
     "a16z":         {"time_rule": "recent_7d", "limit": 20},
     "ai-bot":        {"time_rule": "today_yesterday", "limit": 20},
     "白鲸出海":       {"time_rule": "today_yesterday", "limit": 20},
+    "微信公众号":     {"time_rule": "realtime", "limit": 15},
     # —— 今日热榜 · 游戏与产品 ——
     "GameLook":      {"time_rule": "today_yesterday", "limit": 20},
     "Product Hunt":  {"time_rule": "realtime", "limit": 20},   # PH 每日榜单固定展示昨日榜
