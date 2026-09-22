@@ -141,6 +141,8 @@ def filter_by_time_rule(items: List[dict], time_rule: str,
     """按信息源独立的时间窗口策略过滤条目（规则见 config.SOURCE_RULES）：
     - today_yesterday：当天有数据只取当天；当天为空则取前一天；两天都无则返回空列表，
       绝不保留更早数据，防止历史数据爆炸；无时间字段无法判定日期的条目一律丢弃。
+    - today_and_yesterday：同时保留今天与昨天两天的条目（今天在前），两天都无则返回空，
+      绝不保留更早数据；无时间字段无法判定日期的条目一律丢弃。
     - recent_Nd：保留最近 N 天内的条目（适配周更/低频深度源，如 a16z）。
     - realtime / 其他：实时榜单快照，不做日期过滤，原样返回。
     """
@@ -154,10 +156,25 @@ def filter_by_time_rule(items: List[dict], time_rule: str,
                 if it.get("time") is not None and it["time"] >= cutoff]
         print(f"  [时间窗] {source_name} 近 {days} 天保留 {len(kept)} 条")
         return kept
-    if time_rule != "today_yesterday":
-        return items
     today = NOW.astimezone(CN_TZ).date()
     yesterday = today - timedelta(days=1)
+    if time_rule == "today_and_yesterday":
+        todays, ydays = [], []
+        for it in items:
+            t = it.get("time")
+            if t is None:
+                continue
+            d = t.astimezone(CN_TZ).date()
+            if d == today:
+                todays.append(it)
+            elif d == yesterday:
+                ydays.append(it)
+        kept = todays + ydays
+        print(f"  [时间窗] {source_name} 今昨两天合并保留 {len(kept)} 条"
+              f"（今天 {len(todays)} / 昨天 {len(ydays)}）")
+        return kept
+    if time_rule != "today_yesterday":
+        return items
     todays, ydays = [], []
     for it in items:
         t = it.get("time")

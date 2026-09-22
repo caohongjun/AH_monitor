@@ -118,8 +118,18 @@ document.addEventListener('DOMContentLoaded',function(){
 
 
 def _nav_extras() -> str:
-    """导航最右侧控件：每日定时构建时间 + dark/light 主题切换按钮"""
+    """导航最右侧控件：GitHub 手动触发链接 + 每日定时构建时间 + dark/light 主题切换按钮"""
     return """<div class="ml-auto flex items-center gap-2">
+      <a href="https://github.com/caohongjun/AH_monitor/actions/workflows/deploy.yml"
+         target="_blank" rel="noopener noreferrer"
+         class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg
+                border border-slate-700 text-slate-300 hover:border-amber-500/50
+                hover:text-amber-400 transition-colors"
+         title="GitHub Actions 部署页面 · 发现数据未及时更新可手动触发构建">
+        <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+      </a>
       <span class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg
                    border border-slate-700 text-slate-400 select-none"
             title="GitHub Actions 每日定时构建（UTC 01:30 / 10:00 = 北京时间 09:30 / 18:00，实际有 0~30 分钟调度延迟）">
@@ -1010,16 +1020,31 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
     </div>"""
 
 
-def _hot_section(title: str, icon: str, modules: dict) -> str:
-    """渲染一个板块（含多个信息源模块，响应式 2~3 列）"""
+def _hot_section(title: str, icon: str, modules: dict, collapsible: bool = False) -> str:
+    """渲染一个板块（含多个信息源模块，响应式 2~3 列）。collapsible 为 True 时标题右侧显示折叠按钮"""
     module_html = "\n".join(_hot_module(name, items) for name, items in modules.items())
+    toggle_btn = ""
+    if collapsible:
+        toggle_btn = (
+            '<button type="button" onclick="toggleHotSection(this)" '
+            'class="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg '
+            'border border-slate-700 text-slate-400 hover:border-amber-500/50 '
+            'hover:text-amber-400 transition-colors" '
+            'title="折叠 / 展开此板块">'
+            '<svg class="hot-collapse-icon w-3.5 h-3.5 transition-transform duration-200" '
+            'viewBox="0 0 20 20" fill="currentColor">'
+            '<path fill-rule="evenodd" '
+            'd="M5.23 7.21a.75.75 0 011.06.02L10 11.06l3.71-3.83a.75.75 0 111.08 1.04l-4.25 4.39a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z" '
+            'clip-rule="evenodd"/></svg></button>'
+        )
     return f"""
   <section class="mb-8">
     <div class="flex items-center gap-2 mb-4">
       <span class="text-xl">{icon}</span>
       <h2 class="text-lg font-bold text-slate-50">{title}</h2>
+      {toggle_btn}
     </div>
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 hot-grid">
       {module_html}
     </div>
   </section>"""
@@ -1028,12 +1053,24 @@ def _hot_section(title: str, icon: str, modules: dict) -> str:
 def render_hotboard_page(data: dict) -> str:
     """渲染今日热榜页：社会舆情 / 科技动态 / 游戏与产品 三大板块"""
     sections = (
-        _hot_section("社会舆情", "👥", data.get("social", {}))
-        + _hot_section("科技动态", "💡", data.get("tech", {}))
+        _hot_section("社会舆情", "👥", data.get("social", {}), collapsible=True)
+        + _hot_section("科技动态", "💡", data.get("tech", {}), collapsible=True)
         + _hot_section("游戏与产品", "🎮", data.get("gaming", {}))
     )
+    # 折叠/展开脚本：点击按钮切换该板块下所有模块的显示
+    toggle_script = """
+<script>
+function toggleHotSection(btn) {
+  var grid = btn.closest('section').querySelector('.hot-grid');
+  var icon = btn.querySelector('.hot-collapse-icon');
+  var collapsed = grid.style.display === 'none';
+  grid.style.display = collapsed ? '' : 'none';
+  icon.style.transform = collapsed ? '' : 'rotate(-90deg)';
+}
+</script>
+"""
     return _info_page_shell("今日热榜", "🔥", "index.html",
                             "今日头条 / 微博热搜 / 百度热搜 / Reddit / BBC / 36kr / 量子位 / a16z / ai-bot / 微信公众号 / GameLook / Product Hunt / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
-                            sections, NOW.strftime("%Y-%m-%d %H:%M"))
+                            sections + toggle_script, NOW.strftime("%Y-%m-%d %H:%M"))
 
 

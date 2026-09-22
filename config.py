@@ -129,9 +129,11 @@ NAV_ITEMS = [
 # ============================ 信息源采集规则（每个源独立配置） ============================
 # 各源刷新频率不同，时间策略与条数各自独立，不使用统一规则。
 #   time_rule:
-#     "today_yesterday" — 仅爬北京时间当天数据；当天无更新则回退爬前一天；
-#                         昨天仍无数据则该模块为空（不展示），绝不爬更早数据，防止历史数据爆炸
-#     "realtime"        — 实时榜单/热榜快照（页面本身即"当前"内容），不按日期过滤
+#     "today_yesterday"        — 仅爬北京时间当天数据；当天无更新则回退爬前一天；
+#                               昨天仍无数据则该模块为空（不展示），绝不爬更早数据，防止历史数据爆炸
+#     "today_and_yesterday"    — 同时爬今天与昨天两天数据并合并展示（今天在前）；
+#                               两天均无数据则该模块为空，绝不爬更早数据
+#     "realtime"               — 实时榜单/热榜快照（页面本身即"当前"内容），不按日期过滤
 #   limit: 过滤后每个模块最多展示条数（超出部分在卡片内部滚动）
 SOURCE_RULES = {
     # —— 今日热榜 · 社会舆情 ——
@@ -145,8 +147,8 @@ SOURCE_RULES = {
     "36kr":          {"time_rule": "today_yesterday", "limit": 20},
     "量子位":         {"time_rule": "today_yesterday", "limit": 20},
     "a16z":         {"time_rule": "recent_7d", "limit": 20},
-    "ai-bot":        {"time_rule": "today_yesterday", "limit": 20},
-    "白鲸出海":       {"time_rule": "today_yesterday", "limit": 20},
+    "ai-bot":        {"time_rule": "today_and_yesterday", "limit": 20},
+    "白鲸出海":       {"time_rule": "today_and_yesterday", "limit": 20},
     "微信公众号":     {"time_rule": "realtime", "limit": 15},
     # —— 今日热榜 · 游戏与产品 ——
     "GameLook":      {"time_rule": "today_yesterday", "limit": 20},

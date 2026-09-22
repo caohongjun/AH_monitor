@@ -1071,7 +1071,8 @@ def _parse_baijing_reltime(text: str) -> Optional[datetime]:
 def fetch_baijing_home(limit: int = 20, max_pages: int = 3) -> List[dict]:
     """白鲸出海首页文章：调用首页同款 AJAX 接口（POST /index/ajax/get_article/，
     参数 pn 为页码），接口返回的 add_time 是相对时间。
-    只保留当天文章；当天没有更新（如周末）则回退前一天，其余日期不取。
+    时间规则（见 config.SOURCE_RULES，today_and_yesterday）：同时保留今天与昨天两天文章并合并展示，
+    今天在前、昨天在后；两天均无更新则返回空，其余日期不取。
     文章按时间倒序，翻页直到出现大前天及更早的文章即可覆盖今天/昨天全量。"""
     headers = {"X-Requested-With": "XMLHttpRequest", "Referer": "https://www.baijing.cn/"}
     today = NOW.astimezone(CN_TZ).date()
@@ -1110,8 +1111,8 @@ def fetch_baijing_home(limit: int = 20, max_pages: int = 3) -> List[dict]:
         print(f"  [白鲸出海] 首页接口抓取失败: {e}")
         return []
 
-    day_articles = buckets["today"] or buckets["yesterday"]
-    chosen = "当天" if buckets["today"] else "前一天"
+    # 合并今天与昨天两天文章：今天在前（更新），昨天在后
+    day_articles = buckets["today"] + buckets["yesterday"]
     items: List[dict] = []
     for d, a in day_articles[:limit]:
         title = (a.get("title") or "").strip()
@@ -1125,7 +1126,9 @@ def fetch_baijing_home(limit: int = 20, max_pages: int = 3) -> List[dict]:
             "time": datetime(d.year, d.month, d.day, 12, tzinfo=CN_TZ),
             "source": "白鲸出海",
         })
-    print(f"  [白鲸出海] 首页{chosen}文章 {len(items)} 条")
+    today_n = sum(1 for it in items if it["time"].astimezone(CN_TZ).date() == today)
+    yest_n = len(items) - today_n
+    print(f"  [白鲸出海] 首页今昨两天文章 {len(items)} 条（今天 {today_n} / 昨天 {yest_n}）")
     return items
 
 
@@ -1146,8 +1149,8 @@ def _parse_aibot_date(text: str, now: datetime) -> Optional[datetime]:
 def fetch_aibot_news(limit: int = 20) -> List[dict]:
     """ai-bot.cn 每日 AI 新闻页：页面按 .news-date 日期标签分组（工作日更新），
     日期分组在嵌套的 .news-list 中，需递归扁平化处理。
-    时间规则（见 config.SOURCE_RULES）：只抓当天分组；当天没有则抓昨天分组；
-    昨天也没有（如周一、周日运行且周末未更新）则返回空，绝不抓更早分组，防止历史数据爆炸。"""
+    时间规则（见 config.SOURCE_RULES，today_and_yesterday）：同时抓今天与昨天两天分组并合并展示，
+    今天在前、昨天在后；两天均无分组（如周末未更新）则返回空，绝不抓更早分组，防止历史数据爆炸。"""
     try:
         resp = SESSION.get("https://ai-bot.cn/daily-ai-news/", timeout=15)
         resp.raise_for_status()
@@ -1193,43 +1196,49 @@ def fetch_aibot_news(limit: int = 20) -> List[dict]:
 
     today = NOW.astimezone(CN_TZ).date()
     yesterday = today - timedelta(days=1)
-    # 只在"今天 / 昨天"两个分组里选：今天优先，今天没有才取昨天，其余日期一律不看
-    boxes = groups.get(today.strftime("%Y-%m-%d"))
-    chosen_date = datetime(today.year, today.month, today.day, 12, tzinfo=CN_TZ)
-    if not boxes:
-        boxes = groups.get(yesterday.strftime("%Y-%m-%d"))
-        chosen_date = datetime(yesterday.year, yesterday.month, yesterday.day, 12, tzinfo=CN_TZ)
+    # 合并今天与昨天两天分组：今天在前（更新），昨天在后；其余日期一律不看
+    day_groups: List[tuple] = []
+    for d in (today, yesterday):
+        boxes = groups.get(d.strftime("%Y-%m-%d"))
         if boxes:
-            print(f"  [ai-bot 新闻] 当天无更新，展示前一天（{yesterday:%m月%d日}）数据")
-    if not boxes:
+            day_groups.append((d, boxes))
+    if not day_groups:
         print("  [ai-bot 新闻] 今天与昨天均无分组，模块为空")
         return []
 
     items: List[dict] = []
-    for box in boxes[:limit]:
-        a = box.select_one("h2 a")
-        if not a:
-            continue
-        title = a.get_text(strip=True)
-        href = a.get("href", "")
-        if len(title) < 6 or not href:
-            continue
-        # 摘要在 p 中，其中 .news-time 是"来源：xxx"尾巴，提取前先剔除
-        summary = ""
-        p_tag = box.select_one("p")
-        if p_tag:
-            src = p_tag.select_one(".news-time")
-            if src:
-                src.extract()
-            summary = p_tag.get_text(" ", strip=True)[:120]
-        items.append({
-            "title": title,
-            "url": href,
-            "summary": summary,
-            "source": "ai-bot",
-            "time": chosen_date,
-        })
-    print(f"  [ai-bot 新闻] {chosen_date:%m月%d日} 分组 {len(items)} 条")
+    for d, boxes in day_groups:
+        chosen_date = datetime(d.year, d.month, d.day, 12, tzinfo=CN_TZ)
+        for box in boxes:
+            if len(items) >= limit:
+                break
+            a = box.select_one("h2 a")
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            href = a.get("href", "")
+            if len(title) < 6 or not href:
+                continue
+            # 摘要在 p 中，其中 .news-time 是"来源：xxx"尾巴，提取前先剔除
+            summary = ""
+            p_tag = box.select_one("p")
+            if p_tag:
+                src = p_tag.select_one(".news-time")
+                if src:
+                    src.extract()
+                summary = p_tag.get_text(" ", strip=True)[:120]
+            items.append({
+                "title": title,
+                "url": href,
+                "summary": summary,
+                "source": "ai-bot",
+                "time": chosen_date,
+            })
+        if len(items) >= limit:
+            break
+    today_n = sum(1 for it in items if it["time"].astimezone(CN_TZ).date() == today)
+    yest_n = len(items) - today_n
+    print(f"  [ai-bot 新闻] 今昨两天合并 {len(items)} 条（今天 {today_n} / 昨天 {yest_n}）")
     return items
 
 
