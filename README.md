@@ -128,8 +128,6 @@ python crawler.py
 └── README.md
 ```
 
-`render.py` 中的 `render_ai_page` / `render_global_page` 和 `spiders.py` 中的 `build_ai_data` 是旧版 AI 页、海外产品页的遗留代码，当前不会生成这两个页面。
-
 ## 常见修改
 
 | 想改什么 | 改哪里 |

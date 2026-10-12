@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""spiders.py — 数据抓取层：财经快讯 / 腾讯行情 / RSS(Atom) / HN / ai-bot"""
+"""spiders.py — 数据抓取层：财经快讯 / 腾讯行情 / RSS / 热榜 / 资讯源"""
 import html
 import json
 import re
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from urllib.parse import quote
 
@@ -17,10 +17,9 @@ from config import (CN_TZ, NOW, TODAY, TODAY_START, MAX_EVENTS, OUTPUT_HTML,
                     SOURCE_STATS, HIGH_RISK_TAGS, MARKET_CORE_KEYWORDS,
                     MARKET_KEYWORDS, MARKET_GLOBAL_KEYWORDS, BRIEF_GROUP_MAX,
                     HEADLINES_MAX, NAV_ITEMS, WATCHLIST, WATCH_RELATED_MAX,
-                    GLOBAL_TAG_RULES, AI_CORE, AI_PRODUCT_VERBS, source_rule)
+                    source_rule)
 from utils import (SESSION, http_get, log, strip_html, parse_dt, ts_to_dt,
-                   ms_to_dt, is_today, norm_title, dedupe_and_sort,
-                   is_ai_item, is_ai_product, zh_tags, filter_by_time_rule,
+                   ms_to_dt, is_today, filter_by_time_rule,
                    parse_sina_stocks, parse_em_stock_list)
 
 
@@ -345,9 +344,9 @@ def fetch_quotes(tcodes: List[str]) -> Dict[str, dict]:
     return result
 
 
-# ============================ AI 资讯与海外产品页 ============================
+# ============================ RSS 与资讯源 ============================
 
-# RSS/HN 条目统一结构：{title, url, time(北京时间), summary, source}
+# RSS 条目统一结构：{title, url, time(北京时间), summary, source}
 
 import email.utils as _email_utils
 
@@ -370,7 +369,7 @@ def fetch_rss(url: str, source_name: str, limit: int = 20,
         return []
     items: List[dict] = []
     if root.tag == "{http://www.w3.org/2005/Atom}feed":
-        # —— Atom 格式（如 Product Hunt）：entry/title/link@href/published ——
+        # —— Atom 格式：entry/title/link@href/published ——
         for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
             title = (entry.findtext("{http://www.w3.org/2005/Atom}title") or "").strip()
             link_el = entry.find("{http://www.w3.org/2005/Atom}link")
@@ -562,81 +561,6 @@ def fetch_qbitai(limit: int = 20, time_rule: str = "today_yesterday") -> List[di
     return items
 
 
-def fetch_hn(limit: int = 25) -> List[dict]:
-    """Hacker News 热点抓取：topstories 取前 N 个 id，逐条拉取详情"""
-    try:
-        resp = SESSION.get("https://hacker-news.firebaseio.com/v0/topstories.json", timeout=15)
-        ids = resp.json()[:limit]
-    except Exception as exc:
-        print(f"  [HN] 抓取失败: {exc}")
-        return []
-    items = []
-    for i in ids:
-        try:
-            r = SESSION.get(f"https://hacker-news.firebaseio.com/v0/item/{i}.json", timeout=10)
-            d = r.json() or {}
-            if not d.get("title"):
-                continue
-            items.append({
-                "title": d["title"],
-                "url": d.get("url") or f"https://news.ycombinator.com/item?id={i}",
-                "time": datetime.fromtimestamp(d.get("time", 0), tz=timezone.utc).astimezone(CN_TZ),
-                "summary": f"HN 热度 {d.get('score', 0)} 分 / {d.get('descendants', 0)} 评论",
-                "source": "Hacker News",
-            })
-        except Exception:
-            continue
-    print(f"  [HN] Hacker News: {len(items)} 条")
-    return items
-
-
-def fetch_aibot(limit: int = 25) -> List[dict]:
-    """ai-bot.cn AI 快讯日报页解析（该站关闭了 RSS，改爬 /daily 页面）：
-    .news-item 内 h2>a 为标题与链接，p 为摘要；条目无精确时间，用抓取时刻近似"""
-    try:
-        resp = SESSION.get("https://ai-bot.cn/daily/", timeout=15)
-        resp.raise_for_status()
-        resp.encoding = "utf-8"  # 该页未声明 charset，requests 会误用 latin-1 导致中文乱码
-        soup = BeautifulSoup(resp.text, "html.parser")
-    except Exception as exc:
-        print(f"  [ai-bot] 抓取失败: {exc}")
-        return []
-    items = []
-    approx_time = NOW  # 同一时刻 + sorted 稳定性 = 保持页面原有的新旧顺序
-    for box in soup.select(".news-item")[:limit]:
-        a = box.select_one("h2 a")
-        if not a:
-            continue
-        title = a.get_text(strip=True)
-        if not title:
-            continue
-        p = box.select_one("p")
-        summary = p.get_text(" ", strip=True)[:120] if p else ""
-        items.append({"title": title, "url": a.get("href") or "",
-                      "time": approx_time, "summary": summary, "source": "ai-bot快讯"})
-    print(f"  [ai-bot] ai-bot.cn: {len(items)} 条")
-    return items
-
-
-def build_ai_data() -> tuple:
-    """收集 AI 页数据：量子位 + ai-bot（国内）、TechCrunch + HN（海外），筛出资讯流与产品发布"""
-    items = (fetch_rss("https://www.qbitai.com/feed", "量子位", 30)
-             + fetch_rss("https://techcrunch.com/feed/", "TechCrunch", 30)
-             + fetch_hn(25)
-             + fetch_aibot(25))
-    ai_items = [it for it in items if is_ai_item(f"{it['title']} {it['summary']}")]
-    # 国内 / 海外按来源划分（量子位与 ai-bot 为中文源）
-    DOMESTIC_SOURCES = {"量子位", "ai-bot快讯"}
-    domestic = [it for it in ai_items if it["source"] in DOMESTIC_SOURCES]
-    overseas = [it for it in ai_items if it["source"] not in DOMESTIC_SOURCES]
-    products = [it for it in ai_items if is_ai_product(f"{it['title']} {it['summary']}")]
-    dom = dedupe_and_sort(domestic, 15)
-    ovs = dedupe_and_sort(overseas, 15)
-    prods = dedupe_and_sort(products, 12)
-    print(f"  [AI] 国内 {len(dom)} 条 / 海外 {len(ovs)} 条 / 产品发布 {len(prods)} 条")
-    return dom, ovs, prods
-
-
 def translate_en2zh(text: str) -> str:
     """英文短句翻译为中文（Google translate_a 公开接口，无需密钥）；失败时降级返回原文"""
     if not text or not re.search(r"[a-zA-Z]{3,}", text):
@@ -728,43 +652,6 @@ def _parse_ph_markdown(md_text: str, date_str: str) -> List[dict]:
             "time": base_date,
         })
     return items
-
-
-def build_global_data() -> dict:
-    """收集海外产品页数据：PH 独立成栏；Steam/GameLook 归游戏类；白鲸/HN/TechCrunch 按规则分类"""
-    # PH 榜单：从 producthunt-daily-hot 开源项目拉取昨日中文榜单（标语/介绍已为中文）
-    ph_items = fetch_ph_leaderboard(20)
-    items = (fetch_rss("https://store.steampowered.com/feeds/newreleases.xml", "Steam 新品",
-                       source_rule("Steam 新品", "limit", 20), source_rule("Steam 新品", "time_rule", "today_yesterday"))
-             + fetch_rss("http://www.gamelook.com.cn/feed", "GameLook",
-                         source_rule("GameLook", "limit", 20), source_rule("GameLook", "time_rule", "today_yesterday"))
-             + fetch_baijing_home(source_rule("白鲸出海", "limit", 20))
-             + fetch_rss("https://techcrunch.com/feed/", "TechCrunch",
-                         source_rule("TechCrunch", "limit", 20), source_rule("TechCrunch", "time_rule", "today_yesterday"))
-             + fetch_hn(source_rule("Hacker News", "limit", 25)))
-    groups = {"游戏": [], "工具": [], "应用": [], "更多": []}
-    seen = set()
-    for it in items:
-        key = norm_title(it["title"])
-        if key in seen:
-            continue
-        seen.add(key)
-        # 游戏类：Steam 官方新品与 GameLook（游戏行业垂直媒体）直接归组
-        if it["source"] in ("Steam", "GameLook") or "游戏" in zh_tags(it["title"]):
-            groups["游戏"].append(it)
-            continue
-        tags = zh_tags(f"{it['title']} {it['summary']}")
-        if "工具" in tags:
-            groups["工具"].append(it)
-        elif "应用" in tags:
-            groups["应用"].append(it)
-        else:
-            groups["更多"].append(it)
-    for name in groups:
-        groups[name] = dedupe_and_sort(groups[name], 20)
-    groups["PH精选"] = ph_items  # Product Hunt 独立栏（不参与其余分类）
-    print("  [海外] " + " / ".join(f"{k} {len(v)}" for k, v in groups.items()))
-    return groups
 
 
 # ========================= 热榜类数据源 =========================
@@ -1436,7 +1323,7 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
         "GameLook": fetch_rss("http://www.gamelook.com.cn/feed", "GameLook",
                               source_rule("GameLook", "limit", 20),
                               source_rule("GameLook", "time_rule", "today_yesterday")),
-        "Product Hunt": build_global_data()["PH精选"],
+        "Product Hunt": fetch_ph_leaderboard(source_rule("Product Hunt", "limit", 20)),
         "GitHub Trending": fetch_github_trending(source_rule("GitHub Trending", "limit", 25)),
     }
     print("  [热榜] 社会舆情:" + " ".join(f"{k}{len(v)}" for k, v in social.items())

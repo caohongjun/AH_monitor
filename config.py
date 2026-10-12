@@ -154,10 +154,6 @@ SOURCE_RULES = {
     "GameLook":      {"time_rule": "today_yesterday", "limit": 20},
     "Product Hunt":  {"time_rule": "realtime", "limit": 20},   # PH 每日榜单固定展示昨日榜
     "GitHub Trending": {"time_rule": "realtime", "limit": 25},
-    # —— 海外产品页（global）——
-    "Steam 新品":     {"time_rule": "today_yesterday", "limit": 20},
-    "TechCrunch":    {"time_rule": "today_yesterday", "limit": 20},
-    "Hacker News":   {"time_rule": "realtime", "limit": 25},
 }
 
 
@@ -182,49 +178,5 @@ WATCHLIST = [
 
 # 每个持仓最多展示的相关舆情事件条数
 WATCH_RELATED_MAX = 2
-
-
-GLOBAL_TAG_RULES = [
-    ("游戏", ["game", "steam", "playstation", "xbox", "nintendo", "rpg", "gaming", "游戏",
-             "arcade", "puzzle", "roguelike", "indie game"]),
-    ("AI", [" ai ", "ai-", "-ai", "gpt", "llm", "agent", "openai", "anthropic", "gemini",
-            "artificial intelligence", "machine learning", "人工智能", "大模型",
-            "assistant", "chatbot", "copilot", "automation", "voice ai", "writing ai"]),
-    ("融资收购", ["funding", "raises", "investment", "series ", "valuation", "acquisition",
-                 "acquires", "merger", "ipo", "融资", "收购"]),
-    ("应用", ["app", "ios", "android", "mobile", "应用", "上线", "tracker", "planner",
-             "habit", "health", "finance", "budget", "fitness", "sleep", "weather",
-             "shopping", "social", "browser", "widgets"]),
-    ("工具", ["tool", "editor", "ide", "sdk", "framework", "plugin", "extension", "工具",
-             "插件", "builder", "dashboard", "productivity", "workflow", "api", "code",
-             "developer", "design", "notes", "screenshot", "analytics", "crm",
-             "template", "generator", "converter"]),
-    ("芯片", ["chip", "gpu", "nvidia", "cpu", "semiconductor", "芯片"]),
-    ("安全", ["security", "breach", "hack", "vulnerability", "漏洞", "安全"]),
-    ("开源", ["open source", "open-source", "github", "开源"]),
-    ("音频视频", ["video", "audio", "podcast", "music", "recording", "transcri", "subtitle",
-                 "voice", "sound", "视频", "音频"]),
-]
-
-# AI 公司/产品名单（国内外主流 AI 公司，用于"谁发布了什么"的产品发布判定）
-AI_COMPANIES = ["openai", "anthropic", "google", "gemini", "meta", "llama", "microsoft",
-                "copilot", "xai", "grok", "mistral", "nvidia", "英伟达", "apple", "苹果",
-                "amazon", "aws", "perplexity", "midjourney", "runway", "stability",
-                "character.ai", "deepseek", "深度求索", "智谱", "月之暗面", "kimi",
-                "阿里", "通义", "千问", "qwen", "百度", "文心", "腾讯", "混元", "华为",
-                "盘古", "字节", "豆包", "doubao", "科大讯飞", "讯飞", "星火", "商汤",
-                "旷视", "minimax", "零一万物", "百川", "面壁", "阶跃星辰", "昆仑万维",
-                "天工", "秘塔", "快手", "可灵", "联想", "小米", "美团", "网易", "京东", "蚂蚁"]
-
-# 泛 AI 词（AI 资讯流判定：公司名或泛词命中即算 AI 相关）
-AI_CORE = ["ai", "人工智能", "大模型", "llm", "gpt", "claude", "gemini", "deepseek",
-           "qwen", "通义", "kimi", "豆包", "llama", "agent", "智能体", "openai",
-           "anthropic", "文心", "copilot", "midjourney", "sora", "diffusion", "多模态",
-           "机器人", "算力", "芯片", "英伟达", "nvidia"]
-
-# 发布动词（产品发布 = AI 公司名 + 发布动词双命中）
-AI_PRODUCT_VERBS = ["发布", "开源", "上线", "推出", "公测", "首发", "亮相", "开售",
-                    "launch", "release", "open-sourc", "announc", "unveil", "debut",
-                    "roll out", "introduc", "available", "unveils", "released"]
 
 
