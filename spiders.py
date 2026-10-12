@@ -414,6 +414,154 @@ def fetch_rss(url: str, source_name: str, limit: int = 20,
     return items
 
 
+_QBITAI_POSTS_API = "https://www.qbitai.com/wp-json/wp/v2/posts"
+
+
+def _qbitai_plain(value) -> str:
+    """WordPress REST 的 title/excerpt 可能是 {rendered: html}，转成纯文本"""
+    if isinstance(value, dict):
+        value = value.get("rendered") or ""
+    return strip_html(value)
+
+
+def _parse_qbitai_wp_date(value: str) -> Optional[datetime]:
+    """解析量子位 REST 的 date。站点时区为北京时间，无偏移的时间按北京时间处理"""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt.astimezone(CN_TZ) if dt.tzinfo else dt.replace(tzinfo=CN_TZ)
+
+
+def _parse_qbitai_reltime(text: str) -> Optional[datetime]:
+    """解析首页相对时间：刚刚 / N分钟前 / N小时前 / N天前 / 昨天 HH:MM / 前天 HH:MM / YYYY-MM-DD"""
+    t = re.sub(r"\s+", " ", (text or "").strip())
+    if not t:
+        return None
+    if t == "刚刚" or re.fullmatch(r"\d+分钟前", t):
+        return NOW
+    m = re.fullmatch(r"(\d+)小时前", t)
+    if m:
+        return NOW - timedelta(hours=int(m.group(1)))
+    m = re.fullmatch(r"(\d+)天前", t)
+    if m:
+        return NOW - timedelta(days=int(m.group(1)))
+    m = re.fullmatch(r"(昨天|前天) (\d{1,2}):(\d{2})", t)
+    if m:
+        days = 1 if m.group(1) == "昨天" else 2
+        d = (NOW.astimezone(CN_TZ) - timedelta(days=days)).date()
+        try:
+            return datetime(d.year, d.month, d.day, int(m.group(2)), int(m.group(3)), tzinfo=CN_TZ)
+        except ValueError:
+            return None
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", t)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), 12, 0, tzinfo=CN_TZ)
+        except ValueError:
+            return None
+    return None
+
+
+def _fetch_qbitai_rest(max_pages: int = 3, per_page: int = 20) -> List[dict]:
+    """用 WordPress REST 按发布时间倒序取最近文章。RSS 默认只回约 10 条且会滞后"""
+    items: List[dict] = []
+    seen = set()
+    yesterday = NOW.astimezone(CN_TZ).date() - timedelta(days=1)
+    for page in range(1, max_pages + 1):
+        resp = SESSION.get(
+            _QBITAI_POSTS_API,
+            params={
+                "per_page": per_page,
+                "page": page,
+                "orderby": "date",
+                "order": "desc",
+                "_fields": "date,link,title,excerpt",
+            },
+            headers={"Accept": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code == 400:  # 超出总页数
+            break
+        resp.raise_for_status()
+        posts = resp.json()
+        if not isinstance(posts, list) or not posts:
+            break
+        page_dates = []
+        for post in posts:
+            title = _qbitai_plain(post.get("title"))
+            link = (post.get("link") or "").strip()
+            dt = _parse_qbitai_wp_date(post.get("date") or "")
+            if not title or not link or dt is None or link in seen:
+                continue
+            seen.add(link)
+            page_dates.append(dt.date())
+            items.append({
+                "title": title,
+                "url": link,
+                "time": dt,
+                "summary": _qbitai_plain(post.get("excerpt"))[:120],
+                "source": "量子位",
+            })
+        # 本页已经全部早于昨天，今天和昨天的稿件都已收齐
+        if page_dates and max(page_dates) < yesterday:
+            break
+    return items
+
+
+def _fetch_qbitai_home() -> List[dict]:
+    """REST 不可用时解析首页列表。span.time 为相对时间，无时间的推荐位跳过"""
+    resp = SESSION.get("https://www.qbitai.com/", timeout=15)
+    resp.raise_for_status()
+    resp.encoding = "utf-8"
+    soup = BeautifulSoup(resp.text, "html.parser")
+    items: List[dict] = []
+    seen = set()
+    for box in soup.select(".picture_text"):
+        a = box.select_one("h4 a")
+        clock = box.select_one("span.time")
+        if a is None or clock is None:
+            continue
+        title = a.get_text(strip=True)
+        link = (a.get("href") or "").strip()
+        dt = _parse_qbitai_reltime(clock.get_text())
+        if not title or not link or dt is None or link in seen:
+            continue
+        seen.add(link)
+        summary_el = box.select_one(".text_box > p")
+        summary = summary_el.get_text(" ", strip=True)[:120] if summary_el else ""
+        items.append({
+            "title": title,
+            "url": link,
+            "time": dt,
+            "summary": summary,
+            "source": "量子位",
+        })
+    return items
+
+
+def fetch_qbitai(limit: int = 20, time_rule: str = "today_yesterday") -> List[dict]:
+    """抓取量子位资讯。优先 REST，失败再解析首页，最后退回 RSS。
+    时间策略见 config.SOURCE_RULES：当天有内容只保留当天，当天为空才回退前一天。"""
+    items: List[dict] = []
+    try:
+        items = _fetch_qbitai_rest()
+    except Exception as exc:
+        print(f"  [量子位] REST 抓取失败，改走首页: {exc}")
+    if not items:
+        try:
+            items = _fetch_qbitai_home()
+        except Exception as exc:
+            print(f"  [量子位] 首页抓取失败，改走 RSS: {exc}")
+    if not items:
+        return fetch_rss("https://www.qbitai.com/feed", "量子位", limit, time_rule)
+    items = filter_by_time_rule(items, time_rule, "量子位")[:limit]
+    print(f"  [量子位] {len(items)} 条")
+    return items
+
+
 def fetch_hn(limit: int = 25) -> List[dict]:
     """Hacker News 热点抓取：topstories 取前 N 个 id，逐条拉取详情"""
     try:
@@ -1275,8 +1423,7 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
     tech = {
         "36kr": fetch_36kr_rss(source_rule("36kr", "limit", 20),
                                source_rule("36kr", "time_rule", "today_yesterday")),
-        "量子位": fetch_rss("https://www.qbitai.com/feed", "量子位",
-                           source_rule("量子位", "limit", 20),
+        "量子位": fetch_qbitai(source_rule("量子位", "limit", 20),
                            source_rule("量子位", "time_rule", "today_yesterday")),
         "a16z": fetch_a16z(source_rule("a16z", "limit", 20),
                            source_rule("a16z", "time_rule", "today_yesterday")),
