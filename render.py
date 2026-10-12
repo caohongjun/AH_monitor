@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""render.py — 页面渲染层：舆情看板 / 今日要点 / AI 资讯页 / 海外产品页"""
+"""render.py — 页面渲染层：今日热榜 / 财经与股市"""
 import html
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -8,10 +8,7 @@ from config import (CN_TZ, NOW, TODAY, TODAY_START, MAX_EVENTS, OUTPUT_HTML,
                     QUOTE_BATCH, BROWSER_HEADERS, KEYWORD_GROUPS, TAG_COLORS,
                     SOURCE_STATS, HIGH_RISK_TAGS, MARKET_CORE_KEYWORDS,
                     MARKET_KEYWORDS, MARKET_GLOBAL_KEYWORDS, BRIEF_GROUP_MAX,
-                    HEADLINES_MAX, NAV_ITEMS, WATCHLIST, WATCH_RELATED_MAX,
-                    GLOBAL_TAG_RULES, AI_CORE, AI_PRODUCT_VERBS)
-from utils import (norm_title, zh_tags, is_ai_item, is_ai_product,
-                   dedupe_and_sort, log)
+                    HEADLINES_MAX, NAV_ITEMS, WATCHLIST, WATCH_RELATED_MAX)
 from processor import summarize, build_market_headlines, build_watchlist
 
 
@@ -739,54 +736,10 @@ function resetFilters() {
         .replace("__SOURCE_LINES__", source_lines)
     )
 
-def _feed_item_html(item: dict) -> str:
-    """资讯条目渲染：时间 + 标题（跳原文）+ 来源 + 中文标签；带 tagline（如 PH 产品）时渲染两行"""
-    time_str = item["time"].strftime("%m-%d %H:%M") if item["time"] else "--:--"
-    tags = " ".join(
-        f'<span class="px-1 rounded bg-cyan-500/10 text-cyan-300/80 border border-cyan-500/20 text-[10px]">{html.escape(t)}</span>'
-        for t in zh_tags(f"{item['title']} {item.get('tagline', '')} {item['summary']}")
-    )
-    # PH 榜单条目显示投票数徽章
-    vote_badge = ""
-    if item.get("votes"):
-        vote_badge = (f'<span class="text-[10px] text-orange-300/90 bg-orange-500/10 border '
-                      f'border-orange-500/20 rounded px-1.5 py-0.5 shrink-0" title="Product Hunt 投票数">'
-                      f'▲ {html.escape(str(item["votes"]))}</span>')
-    row = f"""
-      <a href="{html.escape(item['url'] if item['url'].startswith(("http://", "https://")) else "#", quote=True)}"
-         target="_blank" rel="noopener noreferrer"
-         class="flex items-baseline gap-2 py-2 rounded px-1 -mx-1
-                hover:bg-slate-800/40 transition-colors"
-         title="{html.escape(item['title'])}">
-        <span class="font-mono text-[11px] text-slate-500 shrink-0">{time_str}</span>
-        <span class="text-[13px] text-slate-200 flex-1">{html.escape(item["title"])}</span>
-        {vote_badge}
-        {tags}
-        <span class="text-[10px] text-slate-600 shrink-0">{html.escape(item["source"])}</span>
-      </a>"""
-    if item.get("tagline"):
-        en_tip = html.escape(item.get("tagline_en", ""), quote=True)
-        # PH 产品：hover 条目时在下方内联展开中文介绍（来自数据源的「介绍」字段）
-        summary = (item.get("summary") or "").strip()
-        intro_expand = ""
-        if summary:
-            intro_expand = (
-                f'<div class="max-h-0 overflow-hidden transition-all duration-200 '
-                f'group-hover:max-h-48 group-hover:overflow-y-auto group-hover:scroll-thin '
-                f'text-[11px] text-slate-400 leading-relaxed mt-1 break-words">'
-                f'{html.escape(summary)}</div>'
-            )
-        return f"""
-    <div class="group border-b border-slate-800/50 last:border-0">{row}
-      <div class="text-[11px] text-slate-500 pl-[72px] pb-2 -mt-1 pr-2" title="{en_tip}">↳ {html.escape(item["tagline"])}</div>
-      <div class="pl-[72px] pr-2">{intro_expand}</div>
-    </div>"""
-    return row
-
 
 def _info_page_shell(title: str, icon: str, active: str, subtitle: str,
                      sections: str, build_time: str) -> str:
-    """AI 页 / 海外产品页共用 HTML 骨架（与舆情页同一风格）"""
+    """今日热榜页 HTML 骨架"""
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -835,71 +788,6 @@ def _info_page_shell(title: str, icon: str, active: str, subtitle: str,
 </body>
 </html>
 """
-
-
-def render_ai_page(domestic: List[dict], overseas: List[dict], products: List[dict]) -> str:
-    """渲染 AI 资讯页：国内 AI 资讯 / 海外 AI 资讯 / AI 产品发布三区块"""
-    def block(items: List[dict], empty_hint: str) -> str:
-        rows = "\n".join(_feed_item_html(it) for it in items) or \
-            f'<div class="text-xs text-slate-600 py-3">{empty_hint}</div>'
-        return f'<div class="bg-slate-900/70 border border-slate-800 rounded-xl p-4">{rows}</div>'
-
-    sections = f"""
-  <section class="mb-6">
-    <div class="flex items-center gap-2 mb-3">
-      <span class="text-emerald-400 text-lg">🇨🇳</span>
-      <h2 class="text-base font-bold text-slate-100">国内 AI 资讯</h2>
-      <span class="text-xs text-slate-500">量子位 / ai-bot快讯 · 时间倒序</span>
-    </div>
-    {block(domestic, "今日暂无国内 AI 资讯")}
-  </section>
-
-  <section class="mb-6">
-    <div class="flex items-center gap-2 mb-3">
-      <span class="text-cyan-400 text-lg">🌐</span>
-      <h2 class="text-base font-bold text-slate-100">海外 AI 资讯</h2>
-      <span class="text-xs text-slate-500">TechCrunch / Hacker News · 时间倒序</span>
-    </div>
-    {block(overseas, "今日暂无海外 AI 资讯")}
-  </section>
-
-  <section class="mb-6">
-    <div class="flex items-center gap-2 mb-3">
-      <span class="text-amber-400 text-lg">🚀</span>
-      <h2 class="text-base font-bold text-slate-100">AI 产品发布</h2>
-      <span class="text-xs text-slate-500">国内外公司新产品 / 新模型发布动态</span>
-    </div>
-    {block(products, "今日暂无 AI 产品发布动态")}
-  </section>
-"""
-    return _info_page_shell("AI 资讯看板", "🤖", "ai.html",
-                            "AI 行业资讯与产品发布监控 · 量子位 / ai-bot快讯 / TechCrunch / Hacker News",
-                            sections, NOW.strftime("%Y-%m-%d %H:%M"))
-
-
-def render_global_page(groups: dict) -> str:
-    """渲染海外产品页：Product Hunt 精选 + 游戏 / 工具 / 应用 等分组资讯"""
-    group_icons = {"PH精选": "🚀", "游戏": "🎮", "工具": "🛠️", "应用": "📱", "更多": "📦"}
-    group_hint = {"PH精选": "海外新产品发布榜单 · 每日精选"}
-    sections = ""
-    for name in ("PH精选", "游戏", "工具", "应用", "更多"):
-        items = groups.get(name) or []
-        rows = "\n".join(_feed_item_html(it) for it in items) or \
-            '<div class="text-xs text-slate-600 py-3">今日暂无相关资讯</div>'
-        hint = group_hint.get(name, f"共 {len(items)} 条")
-        sections += f"""
-  <section class="mb-6">
-    <div class="flex items-center gap-2 mb-3">
-      <span class="text-lg">{group_icons.get(name, "📦")}</span>
-      <h2 class="text-base font-bold text-slate-100">{name}</h2>
-      <span class="text-xs text-slate-500">{hint}</span>
-    </div>
-    <div class="bg-slate-900/70 border border-slate-800 rounded-xl p-4 max-h-[520px] overflow-y-auto scroll-thin pr-2">{rows}</div>
-  </section>
-"""
-    return _info_page_shell("海外产品资讯", "🌏", "global.html",
-                            "Product Hunt / Steam / GameLook / 白鲸出海 / TechCrunch / Hacker News",
-                            sections, NOW.strftime("%Y-%m-%d %H:%M"))
 
 
 # ========================= 今日热榜页 =========================

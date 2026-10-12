@@ -11,8 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from config import (CN_TZ, NOW, TODAY, TODAY_START, MAX_EVENTS, OUTPUT_HTML,
-                    QUOTE_BATCH, BROWSER_HEADERS, KEYWORD_GROUPS, TAG_COLORS,
-                    GLOBAL_TAG_RULES, AI_CORE, AI_COMPANIES, AI_PRODUCT_VERBS)
+                    QUOTE_BATCH, BROWSER_HEADERS, KEYWORD_GROUPS, TAG_COLORS)
 
 
 SESSION = requests.Session()
@@ -95,45 +94,6 @@ def is_today(dt: Optional[datetime]) -> bool:
 def norm_title(title: str) -> str:
     """标题归一化：去空白与标点，用于跨源同稿去重"""
     return re.sub(r"[\s\u3000\W_]+", "", title or "").lower()
-def zh_tags(text: str) -> List[str]:
-    """按规则给条目打中文标签（最多 2 个），辅助快速理解英文内容"""
-    low = f" {text.lower()} "
-    tags = [tag for tag, kws in GLOBAL_TAG_RULES if any(kw in low for kw in kws)]
-    return tags[:2]
-
-
-def _kw_hit(low: str, kw: str) -> bool:
-    """关键词命中判定：英文短词（<=3字符，如 ai）用词边界匹配，避免误伤 airbnb/detail 等；其余做包含匹配"""
-    if kw.isascii() and len(kw) <= 3 and kw.isalpha():
-        return re.search(rf"\b{re.escape(kw)}\b", low) is not None
-    return kw in low
-
-
-def is_ai_item(text: str) -> bool:
-    """判断是否 AI 相关资讯：泛 AI 词或 AI 公司名命中（大小写不敏感）"""
-    low = text.lower()
-    return any(_kw_hit(low, kw) for kw in AI_CORE) or any(_kw_hit(low, kw) for kw in AI_COMPANIES)
-
-
-def is_ai_product(text: str) -> bool:
-    """判断是否 AI 产品发布动态：AI 公司/产品名 + 发布动词双命中"""
-    low = text.lower()
-    has_company = any(_kw_hit(low, kw) for kw in AI_COMPANIES)
-    return has_company and any(_kw_hit(low, kw) for kw in AI_PRODUCT_VERBS)
-
-
-def dedupe_and_sort(items: List[dict], limit: int) -> List[dict]:
-    """按归一化标题精确去重并按时间倒序取前 N 条"""
-    seen, out = set(), []
-    for it in sorted(items, key=lambda x: x["time"] or datetime.min.replace(tzinfo=CN_TZ), reverse=True):
-        key = norm_title(it["title"])
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(it)
-        if len(out) >= limit:
-            break
-    return out
 
 
 def filter_by_time_rule(items: List[dict], time_rule: str,

@@ -10,11 +10,9 @@ from config import (CN_TZ, NOW, TODAY, TODAY_START, MAX_EVENTS, OUTPUT_HTML,
                     SOURCE_STATS, HIGH_RISK_TAGS, MARKET_CORE_KEYWORDS,
                     MARKET_KEYWORDS, MARKET_DOMESTIC_KEYWORDS,
                     MARKET_GLOBAL_KEYWORDS, BRIEF_GROUP_MAX, HEADLINES_MAX,
-                    WATCHLIST, WATCH_RELATED_MAX,
-                    GLOBAL_TAG_RULES, AI_CORE, AI_COMPANIES, AI_PRODUCT_VERBS)
+                    WATCHLIST, WATCH_RELATED_MAX)
 from utils import (log, norm_title, is_today, ts_to_dt, ms_to_dt,
-                   strip_html, parse_dt, dedupe_and_sort, is_ai_item,
-                   is_ai_product, zh_tags, classify_a_share,
+                   strip_html, parse_dt, classify_a_share,
                    parse_sina_stocks, parse_em_stock_list)
 from spiders import fetch_quotes
 
