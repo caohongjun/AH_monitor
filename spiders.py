@@ -562,21 +562,26 @@ def fetch_qbitai(limit: int = 20, time_rule: str = "today_yesterday") -> List[di
 
 
 def translate_en2zh(text: str) -> str:
-    """英文短句翻译为中文（Google translate_a 公开接口，无需密钥）；失败时降级返回原文"""
+    """英文短句翻译为中文（Google translate_a 公开接口，无需密钥）；失败时降级返回原文。
+    gtx 经常被限流，限流或失败时改用 dict-chrome-ex 再试一次。"""
     if not text or not re.search(r"[a-zA-Z]{3,}", text):
         return text  # 无英文内容或空串直接返回
-    try:
-        resp = SESSION.get(
-            "https://translate.googleapis.com/translate_a/single",
-            params={"client": "gtx", "sl": "en", "tl": "zh-CN", "dt": "t", "q": text},
-            timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        # 返回结构 [[["译句","原句",...],...]...]，拼接所有翻译分段
-        zh = "".join(seg[0] for seg in (data[0] or []) if seg and seg[0])
-        return zh or text
-    except Exception:
-        return text
+    url = "https://translate.googleapis.com/translate_a/single"
+    for client in ("gtx", "dict-chrome-ex"):
+        try:
+            resp = SESSION.get(url, params={"client": client, "sl": "en", "tl": "zh-CN",
+                                            "dt": "t", "q": text}, timeout=10)
+            if resp.status_code == 429:
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            # 返回结构 [[["译句","原句",...],...]...]，拼接所有翻译分段
+            zh = "".join(seg[0] for seg in (data[0] or []) if seg and seg[0])
+            if zh:
+                return zh
+        except Exception:
+            continue
+    return text
 
 
 def fetch_ph_leaderboard(limit: int = 20) -> List[dict]:
@@ -939,6 +944,7 @@ def fetch_wechat(limit: int = 15) -> List[dict]:
 
 def fetch_github_trending(limit: int = 25) -> List[dict]:
     """GitHub Trending：爬取 trending 页面，提取仓库名/描述/今日 star 数。
+    仓库名保持原文；描述用 translate_en2zh 译成中文，失败则保留英文。
     带 3 次重试，应对网络抖动；选择器做了兼容以适配 GitHub 页面结构变更。"""
     for attempt in range(3):
         try:
@@ -961,6 +967,8 @@ def fetch_github_trending(limit: int = 25) -> List[dict]:
         name = h2.get_text(strip=True).replace("\n", "").replace(" ", "")
         desc_tag = article.select_one("p")
         desc = desc_tag.get_text(strip=True) if desc_tag else ""
+        if desc:
+            desc = translate_en2zh(desc)
         # 今日 star 数：兼容多种 class 写法
         star_tag = (article.select_one("span.d-inline-block.float-sm-right")
                     or article.select_one("span.float-sm-right"))
