@@ -143,6 +143,7 @@ SOURCE_RULES = {
     "Reddit":         {"time_rule": "realtime", "limit": 20},
     "BBC":          {"time_rule": "today_yesterday", "limit": 20},
     "财经要点":       {"time_rule": "today_yesterday", "limit": 20},
+    "X热点话题":      {"time_rule": "realtime", "limit": 20},
     # —— 今日热榜 · 科技动态 ——
     "36kr":          {"time_rule": "today_yesterday", "limit": 20},
     "量子位":         {"time_rule": "today_yesterday", "limit": 20},
