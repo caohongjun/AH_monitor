@@ -72,7 +72,7 @@
 |------|----------|----------|----------|
 | GameLook | GameLook 官方 RSS | 当天优先 | 20 |
 | Product Hunt | 开源项目 [producthunt-daily-hot](https://github.com/ViggoZ/producthunt-daily-hot) 每日生成的中文榜单 | 展示**昨天**的每日榜单；该榜单每天北京时间约 15:00 才生成，还没生成时改用前天的榜单。鼠标悬停可展开中文介绍 | 20 |
-| GitHub Trending | GitHub Trending 页面 | 实时榜单，附今日新增 star 数 | 25 |
+| GitHub Trending | GitHub Trending 页面 | 实时榜单。仓库名保持原文，描述译为中文（与 Reddit 标题共用同一翻译接口，失败则保留英文），并附今日新增 star 数 | 25 |
 
 ### 财经与股市页
 
