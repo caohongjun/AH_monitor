@@ -115,8 +115,18 @@ document.addEventListener('DOMContentLoaded',function(){
 
 
 def _nav_extras() -> str:
-    """导航最右侧控件：GitHub 手动触发链接 + 每日定时构建时间 + dark/light 主题切换按钮"""
+    """导航最右侧控件：排行榜入口 + GitHub 手动触发链接 + 每日定时构建时间 + dark/light 主题切换按钮"""
     return """<div class="ml-auto flex items-center gap-2">
+      <a href="https://caohongjun.github.io/appmonitor/web/index.html"
+         target="_blank" rel="noopener noreferrer"
+         class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg
+                border border-slate-700 text-slate-300 hover:border-amber-500/50
+                hover:text-amber-400 transition-colors"
+         title="排行榜">
+        <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M1.5 11.5h3V14h-3v-2.5zm5-4h3V14h-3V7.5zm5-5h3V14h-3V2.5zM0 15h16v1H0v-1z"/>
+        </svg>
+      </a>
       <a href="https://github.com/caohongjun/AH_monitor/actions/workflows/deploy.yml"
          target="_blank" rel="noopener noreferrer"
          class="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg
