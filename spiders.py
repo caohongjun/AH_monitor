@@ -1277,10 +1277,46 @@ def fetch_aibot_news(limit: int = 20) -> List[dict]:
     return items
 
 
+_X_TRENDS_URL = "https://getdaytrends.com/"
+
+
+def fetch_x_trends(limit: int = 20, time_rule: str = "realtime") -> List[dict]:
+    """X 全球热点话题。官方接口收费且网页有登录墙，改读公开汇总页 getdaytrends 的全球实时榜。
+    时间策略与条数见 config.SOURCE_RULES，默认 realtime：只取构建时刻的榜单快照，不按日期过滤。
+    每条话题打开 X 搜索页。抓取失败返回空列表，不影响其他模块。"""
+    try:
+        resp = SESSION.get(_X_TRENDS_URL, timeout=15,
+                           headers={"Accept": "text/html",
+                                    "Accept-Language": "en-US,en;q=0.9"})
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+    except Exception as exc:
+        print(f"  [X热点] 抓取失败: {exc}")
+        return []
+    items: List[dict] = []
+    seen = set()
+    # table.trends 是当前全球排名；「最多讨论」表没有 trends 类，不混入
+    for table in soup.select("table.trends"):
+        for a in table.select("td.main a"):
+            title = a.get_text(strip=True)
+            if not title or title in seen:
+                continue
+            seen.add(title)
+            items.append({
+                "title": title,
+                "url": "https://x.com/search?q=" + quote(title) + "&src=typed_query&f=live",
+                "summary": "",
+                "source": "X热点话题",
+                "time": NOW,
+            })
+    items = filter_by_time_rule(items, time_rule, "X热点话题")[:limit]
+    print(f"  [X热点] {len(items)} 条（全球实时榜）")
+    return items
+
+
 
 def build_hotboard_data(market_headlines: dict = None) -> dict:
-    """收集今日热榜页数据：社会舆情（头条/微博/财经要点）、科技动态（36kr/量子位/ai-bot）、
-    游戏与产品（GameLook/PH/GitHub Trending），按板块分组返回。
+    """收集今日热榜页数据：社会舆情（含 X 热点话题）、科技动态、游戏与产品，按板块分组返回。
     每个源的时间策略与条数统一从 config.SOURCE_RULES 读取，互不影响"""
     # 社会舆情板块：头条 + 微博 + 百度（均为实时榜单）+ Reddit 每日热门 + BBC 当日头条 + 财经要点（今天/昨天规则）
     social = {
@@ -1306,6 +1342,10 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
         social["财经要点"] = filter_by_time_rule(
             raw_briefs, source_rule("财经要点", "time_rule", "today_yesterday"), "财经要点"
         )[:source_rule("财经要点", "limit", 20)]
+    # X 热点是社会舆情里的独立模块，规则不跟其他源共用
+    social["X热点话题"] = fetch_x_trends(
+        source_rule("X热点话题", "limit", 20),
+        source_rule("X热点话题", "time_rule", "realtime"))
     # 科技动态板块
     tech = {
         "36kr": fetch_36kr_rss(source_rule("36kr", "limit", 20),

@@ -806,6 +806,7 @@ _SOURCE_FAVICON = {
     "ai-bot":    "ai-bot.cn",
     "白鲸出海":  "baijing.cn",
     "微信公众号": "weixin.qq.com",
+    "X热点话题":  "x.com",
     "GameLook":  "gamelook.com.cn",
     "Product Hunt": "producthunt.com",
     "GitHub Trending": "github.com",
@@ -824,6 +825,7 @@ _SOURCE_HOME = {
     "ai-bot":    "https://ai-bot.cn/daily-ai-news/",
     "白鲸出海":  "https://www.baijing.cn/",
     "微信公众号": "https://weixin.sogou.com/",
+    "X热点话题":  "https://x.com/explore",
     "GameLook":  "http://www.gamelook.com.cn/",
     "Product Hunt": "https://www.producthunt.com/",
     "GitHub Trending": "https://github.com/trending",
@@ -939,7 +941,7 @@ def _hot_section(title: str, icon: str, modules: dict, collapsible: bool = False
 
 
 def render_hotboard_page(data: dict) -> str:
-    """渲染今日热榜页：社会舆情 / 科技动态 / 游戏与产品 三大板块"""
+    """渲染今日热榜页：社会舆情 / 科技动态 / 游戏与产品"""
     sections = (
         _hot_section("社会舆情", "👥", data.get("social", {}), collapsible=True)
         + _hot_section("科技动态", "💡", data.get("tech", {}), collapsible=True)
@@ -958,7 +960,7 @@ function toggleHotSection(btn) {
 </script>
 """
     return _info_page_shell("今日热榜", "🔥", "index.html",
-                            "今日头条 / 微博热搜 / 百度热搜 / Reddit / BBC / 36kr / 量子位 / a16z / ai-bot / 微信公众号 / GameLook / Product Hunt / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
+                            "今日头条 / 微博热搜 / 百度热搜 / Reddit / BBC / 36kr / 量子位 / a16z / ai-bot / 微信公众号 / X热点话题 / GameLook / Product Hunt / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
                             sections + toggle_script, NOW.strftime("%Y-%m-%d %H:%M"))
 
 
