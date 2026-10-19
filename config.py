@@ -147,10 +147,10 @@ SOURCE_RULES = {
     "X热点话题":      {"time_rule": "realtime", "limit": 20},
     # —— 今日热榜 · 科技动态 ——
     "36kr":          {"time_rule": "today_yesterday", "limit": 20},
-    "量子位":         {"time_rule": "today_yesterday", "limit": 20},
+    "量子位":         {"time_rule": "latest_day", "limit": 20},
     "a16z":         {"time_rule": "recent_7d", "limit": 20},
     "ai-bot":        {"time_rule": "today_and_yesterday", "limit": 20},
-    "白鲸出海":       {"time_rule": "today_and_yesterday", "limit": 20},
+    "白鲸出海":       {"time_rule": "latest_day", "limit": 20},
     "微信公众号":     {"time_rule": "realtime", "limit": 15},
     # —— 今日热榜 · 游戏与产品 ——
     "GameLook":      {"time_rule": "latest_day", "limit": 20},

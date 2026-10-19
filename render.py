@@ -857,15 +857,15 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
                      f'{source_name}</a>')
     else:
         name_html = f'<span class="text-sm font-bold text-slate-100">{source_name}</span>'
-    # GameLook 右上角展示最新一条的发布时间，其余模块仍显示本次抓取时间
-    if source_name == "GameLook":
-        data_times = [it["time"] for it in items if it.get("time") is not None]
-        update_time = (max(data_times).astimezone(CN_TZ).strftime("%m月%d日 %H:%M")
-                       if data_times else "暂无更新")
-        time_title = "最新一条的发布时间"
+    # 右上角展示本模块最新一条数据的时间；实时榜没有发布时间时，用本次抓取时间
+    data_times = [it["time"] for it in items
+                  if isinstance(it.get("time"), datetime)]
+    if data_times:
+        update_time = max(data_times).astimezone(CN_TZ).strftime("%m月%d日 %H:%M")
+        time_title = "最新一条的数据时间"
     else:
-        update_time = NOW.strftime("%m月%d日 %H:%M")
-        time_title = "本次抓取时间"
+        update_time = NOW.strftime("%m月%d日 %H:%M") if items else "暂无更新"
+        time_title = "本次抓取时间" if items else "暂无数据"
     rows = []
     for idx, it in enumerate(items, 1):
         title = html.escape(it.get("title", ""))

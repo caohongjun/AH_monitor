@@ -541,9 +541,9 @@ def _fetch_qbitai_home() -> List[dict]:
     return items
 
 
-def fetch_qbitai(limit: int = 20, time_rule: str = "today_yesterday") -> List[dict]:
+def fetch_qbitai(limit: int = 20, time_rule: str = "latest_day") -> List[dict]:
     """抓取量子位资讯。优先 REST，失败再解析首页，最后退回 RSS。
-    时间策略见 config.SOURCE_RULES：当天有内容只保留当天，当天为空才回退前一天。"""
+    时间策略见 config.SOURCE_RULES：默认只保留抓到的数据里最新的那一天。"""
     items: List[dict] = []
     try:
         items = _fetch_qbitai_rest()
@@ -937,7 +937,7 @@ def fetch_wechat(limit: int = 15) -> List[dict]:
         seen_accounts.add(x["tagline"])
         items.append(x)
     for x in items:
-        x.pop("pub_dt", None)  # 排序后移除内部字段，避免污染下游渲染
+        x["time"] = x.pop("pub_dt")  # 保留发布时间，供模块右上角显示最新数据时间
     print(f"  [微信公众号] {len(items)} 条（{len(_WECHAT_ACCOUNTS)} 个账号，每账号取最新 1 篇）")
     return items[:limit]
 
@@ -1094,9 +1094,25 @@ def fetch_a16z(limit: int = 20, time_rule: str = "today_yesterday") -> List[dict
     return items
 
 
+_BAIJING_TIME_RE = re.compile(
+    r'<time class="timeago"[^>]*>\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\s*</time>'
+)
+
+
+def _baijing_article_time(article_id) -> Optional[datetime]:
+    """文章页 timeago 上的绝对发布时间。列表接口只有「N天前」，日期会偏一天"""
+    try:
+        resp = SESSION.get(f"https://www.baijing.cn/article/{article_id}", timeout=12)
+        resp.raise_for_status()
+        m = _BAIJING_TIME_RE.search(resp.text)
+        return parse_dt(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
 def _parse_baijing_reltime(text: str) -> Optional[datetime]:
     """解析白鲸首页接口的相对时间（'刚刚'/'N 分钟前'/'N 小时前'/'N 天前'）
-    为北京时间 datetime；无法识别时返回 None"""
+    为北京时间 datetime；无法识别时返回 None。仅在文章页没有绝对时间时兜底"""
     t = (text or "").strip()
     if not t:
         return None
@@ -1111,67 +1127,60 @@ def _parse_baijing_reltime(text: str) -> Optional[datetime]:
     return None
 
 
-def fetch_baijing_home(limit: int = 20, max_pages: int = 3) -> List[dict]:
+def fetch_baijing_home(limit: int = 20, max_pages: int = 4,
+                       time_rule: str = "latest_day") -> List[dict]:
     """白鲸出海首页文章：调用首页同款 AJAX 接口（POST /index/ajax/get_article/，
-    参数 pn 为页码），接口返回的 add_time 是相对时间。
-    时间规则（见 config.SOURCE_RULES，today_and_yesterday）：同时保留今天与昨天两天文章并合并展示，
-    今天在前、昨天在后；两天均无更新则返回空，其余日期不取。
-    文章按时间倒序，翻页直到出现大前天及更早的文章即可覆盖今天/昨天全量。"""
+    参数 pn 为页码）。列表里的 add_time 只有相对时间，和正文发布时间可能差一天，
+    所以按列表顺序打开文章页，读取 timeago 上的绝对时间。
+    时间规则见 config.SOURCE_RULES，默认 latest_day：只保留最新那一天。
+    文章按时间倒序，读到比最新一天更早的日期即可停止。"""
     headers = {"X-Requested-With": "XMLHttpRequest", "Referer": "https://www.baijing.cn/"}
-    today = NOW.astimezone(CN_TZ).date()
-    yesterday = today - timedelta(days=1)
-    cutoff = today - timedelta(days=2)   # 大前天：见到此日期即停止翻页
-    buckets: Dict[str, list] = {"today": [], "yesterday": []}
     seen_ids = set()
+    raw: List[dict] = []
+    latest_date = None
+    stop = False
     try:
         for pn in range(1, max_pages + 1):
+            if stop:
+                break
             resp = SESSION.post("https://www.baijing.cn/index/ajax/get_article/",
                                 data={"pn": pn}, headers=headers, timeout=15)
             resp.raise_for_status()
             arts = (resp.json().get("data") or {}).get("article_list") or []
             if not arts:
                 break
-            page_dates = []
             for a in arts:
                 aid = a.get("id")
-                if aid in seen_ids:
+                title = (a.get("title") or "").strip()
+                if not aid or aid in seen_ids or not title:
                     continue
                 seen_ids.add(aid)
-                dt = _parse_baijing_reltime(a.get("add_time", ""))
+                dt = _baijing_article_time(aid) or _parse_baijing_reltime(a.get("add_time", ""))
                 if dt is None:
                     continue
                 d = dt.astimezone(CN_TZ).date()
-                page_dates.append(d)
-                target_key = ("today" if d == today
-                              else "yesterday" if d == yesterday else None)
-                if target_key:
-                    buckets[target_key].append((d, a))
-            # 已翻到大前天或更早，今天/昨天的文章必然收集完整
-            if page_dates and min(page_dates) <= cutoff:
-                break
-            time.sleep(0.3)
+                if latest_date is None or d > latest_date:
+                    latest_date = d
+                elif d < latest_date:
+                    stop = True
+                    break
+                raw.append({
+                    "title": title,
+                    # 站内真实路由为 /article/{id}（无 .html 后缀；带后缀会落到"请稍候"错误页）
+                    "url": f"https://www.baijing.cn/article/{aid}",
+                    "summary": (a.get("synopsis") or "").strip()[:120],
+                    "time": dt,
+                    "source": "白鲸出海",
+                })
+                time.sleep(0.1)
+            time.sleep(0.2)
     except Exception as e:
         print(f"  [白鲸出海] 首页接口抓取失败: {e}")
-        return []
+        if not raw:
+            return []
 
-    # 合并今天与昨天两天文章：今天在前（更新），昨天在后
-    day_articles = buckets["today"] + buckets["yesterday"]
-    items: List[dict] = []
-    for d, a in day_articles[:limit]:
-        title = (a.get("title") or "").strip()
-        if not title:
-            continue
-        items.append({
-            "title": title,
-            # 站内真实路由为 /article/{id}（无 .html 后缀；带后缀会落到"请稍候"错误页）
-            "url": f"https://www.baijing.cn/article/{a.get('id')}",
-            "summary": (a.get("synopsis") or "").strip()[:120],
-            "time": datetime(d.year, d.month, d.day, 12, tzinfo=CN_TZ),
-            "source": "白鲸出海",
-        })
-    today_n = sum(1 for it in items if it["time"].astimezone(CN_TZ).date() == today)
-    yest_n = len(items) - today_n
-    print(f"  [白鲸出海] 首页今昨两天文章 {len(items)} 条（今天 {today_n} / 昨天 {yest_n}）")
+    items = filter_by_time_rule(raw, time_rule, "白鲸出海")[:limit]
+    print(f"  [白鲸出海] {len(items)} 条")
     return items
 
 
@@ -1359,11 +1368,13 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
         "36kr": fetch_36kr_rss(source_rule("36kr", "limit", 20),
                                source_rule("36kr", "time_rule", "today_yesterday")),
         "量子位": fetch_qbitai(source_rule("量子位", "limit", 20),
-                           source_rule("量子位", "time_rule", "today_yesterday")),
+                           source_rule("量子位", "time_rule", "latest_day")),
         "a16z": fetch_a16z(source_rule("a16z", "limit", 20),
                            source_rule("a16z", "time_rule", "today_yesterday")),
         "ai-bot": fetch_aibot_news(source_rule("ai-bot", "limit", 20)),
-        "白鲸出海": fetch_baijing_home(source_rule("白鲸出海", "limit", 20)),
+        "白鲸出海": fetch_baijing_home(
+            source_rule("白鲸出海", "limit", 20),
+            time_rule=source_rule("白鲸出海", "time_rule", "latest_day")),
         "微信公众号": fetch_wechat(source_rule("微信公众号", "limit", 15)),
     }
     # 游戏与产品板块
