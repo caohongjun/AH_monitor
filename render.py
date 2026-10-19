@@ -857,7 +857,15 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
                      f'{source_name}</a>')
     else:
         name_html = f'<span class="text-sm font-bold text-slate-100">{source_name}</span>'
-    update_time = NOW.strftime("%m月%d日 %H:%M")
+    # 右上角展示本模块最新一条数据的时间；实时榜没有发布时间时，用本次抓取时间
+    data_times = [it["time"] for it in items
+                  if isinstance(it.get("time"), datetime)]
+    if data_times:
+        update_time = max(data_times).astimezone(CN_TZ).strftime("%m月%d日 %H:%M")
+        time_title = "最新一条的数据时间"
+    else:
+        update_time = NOW.strftime("%m月%d日 %H:%M") if items else "暂无更新"
+        time_title = "本次抓取时间" if items else "暂无数据"
     rows = []
     for idx, it in enumerate(items, 1):
         title = html.escape(it.get("title", ""))
@@ -914,7 +922,7 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
           {name_html}
           <span class="text-[10px] text-slate-500 bg-slate-800/70 rounded px-1.5 py-0.5">{len(items)} 条</span>
         </div>
-        <span class="text-[11px] text-slate-500">{update_time}</span>
+        <span class="text-[11px] text-slate-500" title="{time_title}">{update_time}</span>
       </div>
       <div class="flex-1 min-h-0 overflow-y-auto scroll-thin pr-1">{body}</div>
     </div>"""
