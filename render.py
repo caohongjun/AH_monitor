@@ -857,7 +857,15 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
                      f'{source_name}</a>')
     else:
         name_html = f'<span class="text-sm font-bold text-slate-100">{source_name}</span>'
-    update_time = NOW.strftime("%m月%d日 %H:%M")
+    # GameLook 右上角展示最新一条的发布时间，其余模块仍显示本次抓取时间
+    if source_name == "GameLook":
+        data_times = [it["time"] for it in items if it.get("time") is not None]
+        update_time = (max(data_times).astimezone(CN_TZ).strftime("%m月%d日 %H:%M")
+                       if data_times else "暂无更新")
+        time_title = "最新一条的发布时间"
+    else:
+        update_time = NOW.strftime("%m月%d日 %H:%M")
+        time_title = "本次抓取时间"
     rows = []
     for idx, it in enumerate(items, 1):
         title = html.escape(it.get("title", ""))
@@ -914,7 +922,7 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
           {name_html}
           <span class="text-[10px] text-slate-500 bg-slate-800/70 rounded px-1.5 py-0.5">{len(items)} 条</span>
         </div>
-        <span class="text-[11px] text-slate-500">{update_time}</span>
+        <span class="text-[11px] text-slate-500" title="{time_title}">{update_time}</span>
       </div>
       <div class="flex-1 min-h-0 overflow-y-auto scroll-thin pr-1">{body}</div>
     </div>"""

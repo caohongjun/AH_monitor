@@ -103,6 +103,8 @@ def filter_by_time_rule(items: List[dict], time_rule: str,
       绝不保留更早数据，防止历史数据爆炸；无时间字段无法判定日期的条目一律丢弃。
     - today_and_yesterday：同时保留今天与昨天两天的条目（今天在前），两天都无则返回空，
       绝不保留更早数据；无时间字段无法判定日期的条目一律丢弃。
+    - latest_day：在已抓到的条目里找出最新的那一天（北京时间），只保留这一天；
+      不限于今天或昨天。没有时间的条目丢弃。
     - recent_Nd：保留最近 N 天内的条目（适配周更/低频深度源，如 a16z）。
     - realtime / 其他：实时榜单快照，不做日期过滤，原样返回。
     """
@@ -115,6 +117,20 @@ def filter_by_time_rule(items: List[dict], time_rule: str,
         kept = [it for it in items
                 if it.get("time") is not None and it["time"] >= cutoff]
         print(f"  [时间窗] {source_name} 近 {days} 天保留 {len(kept)} 条")
+        return kept
+    if time_rule == "latest_day":
+        dated = []
+        for it in items:
+            t = it.get("time")
+            if t is None:
+                continue
+            dated.append((t.astimezone(CN_TZ).date(), it))
+        if not dated:
+            print(f"  [时间窗] {source_name} 无可用时间，最新一天为空")
+            return []
+        latest = max(d for d, _ in dated)
+        kept = [it for d, it in dated if d == latest]
+        print(f"  [时间窗] {source_name} 最新一天 {latest} 保留 {len(kept)} 条")
         return kept
     today = NOW.astimezone(CN_TZ).date()
     yesterday = today - timedelta(days=1)

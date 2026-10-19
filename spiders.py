@@ -1370,7 +1370,7 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
     gaming = {
         "GameLook": fetch_rss("http://www.gamelook.com.cn/feed", "GameLook",
                               source_rule("GameLook", "limit", 20),
-                              source_rule("GameLook", "time_rule", "today_yesterday")),
+                              source_rule("GameLook", "time_rule", "latest_day")),
         "Product Hunt": fetch_ph_leaderboard(source_rule("Product Hunt", "limit", 20)),
         "GitHub Trending": fetch_github_trending(source_rule("GitHub Trending", "limit", 25)),
     }

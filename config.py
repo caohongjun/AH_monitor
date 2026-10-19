@@ -133,6 +133,7 @@ NAV_ITEMS = [
 #                               昨天仍无数据则该模块为空（不展示），绝不爬更早数据，防止历史数据爆炸
 #     "today_and_yesterday"    — 同时爬今天与昨天两天数据并合并展示（今天在前）；
 #                               两天均无数据则该模块为空，绝不爬更早数据
+#     "latest_day"             — 不限定今天/昨天：抓到的数据里最新是哪一天，就只展示那一天
 #     "realtime"               — 实时榜单/热榜快照（页面本身即"当前"内容），不按日期过滤
 #   limit: 过滤后每个模块最多展示条数（超出部分在卡片内部滚动）
 SOURCE_RULES = {
@@ -152,7 +153,7 @@ SOURCE_RULES = {
     "白鲸出海":       {"time_rule": "today_and_yesterday", "limit": 20},
     "微信公众号":     {"time_rule": "realtime", "limit": 15},
     # —— 今日热榜 · 游戏与产品 ——
-    "GameLook":      {"time_rule": "today_yesterday", "limit": 20},
+    "GameLook":      {"time_rule": "latest_day", "limit": 20},
     "Product Hunt":  {"time_rule": "realtime", "limit": 20},   # PH 每日榜单固定展示昨日榜
     "GitHub Trending": {"time_rule": "realtime", "limit": 25},
 }
