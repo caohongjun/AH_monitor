@@ -849,33 +849,40 @@ def _reddit_rss_entries(url: str) -> List[dict]:
 def fetch_reddit(limit: int = 20) -> List[dict]:
     """Reddit：抓取面向个人开发者与创意 idea 的多个子版块热帖。
     r/iosapps 固定放在列表最前，其余来自 SideProject / indiehackers / AppIdeas 等。
-    多版块合集 RSS 易被 429，改为逐个版块拉 hot RSS；标题译为中文。"""
-    # iosapps 多留几条，其余版块均分剩余名额
+    优先：iosapps 单拉 + 其余版块一次合集请求（快）；合集 429 时不再逐个重试拖时间。"""
     ios_cap = min(8, max(4, limit // 2))
-    other_cap = max(2, (limit - ios_cap + len(_REDDIT_SUBS) - 2) // max(1, len(_REDDIT_SUBS) - 1))
+    other_subs = _REDDIT_SUBS[1:]
+    other_multi = "+".join(other_subs)
     ordered: List[dict] = []
     seen = set()
-    for idx, sub in enumerate(_REDDIT_SUBS):
-        if idx:
-            time.sleep(2.5)
-        cap = ios_cap if sub == "iosapps" else other_cap
-        rows = _reddit_rss_entries(
-            f"https://www.reddit.com/r/{sub}/hot/.rss?limit={cap}"
-        )
-        if not rows and sub != "iosapps":
-            continue
+
+    def _absorb(rows: List[dict], default_sub: str = ""):
         for row in rows:
             key = row.get("url") or row.get("title")
             if not key or key in seen:
                 continue
             seen.add(key)
-            if not row.get("tagline"):
-                row["tagline"] = f"r/{sub}"
+            if not row.get("tagline") and default_sub:
+                row["tagline"] = f"r/{default_sub}"
             ordered.append(row)
             if len(ordered) >= limit:
-                break
-        if len(ordered) >= limit:
-            break
+                return
+
+    # 1) iosapps 置顶
+    _absorb(
+        _reddit_rss_entries(
+            f"https://www.reddit.com/r/iosapps/hot/.rss?limit={ios_cap}"
+        ),
+        "iosapps",
+    )
+    # 2) 其余版块一次合集拉取；失败就只用 iosapps，避免串行等待
+    if len(ordered) < limit and other_multi:
+        time.sleep(1.5)
+        _absorb(
+            _reddit_rss_entries(
+                f"https://www.reddit.com/r/{other_multi}/hot/.rss?limit={max(30, limit)}"
+            )
+        )
     items = []
     for row in ordered[:limit]:
         zh_title = translate_en2zh(row["title"])
