@@ -802,27 +802,27 @@ _REDDIT_HOME = f"https://www.reddit.com/r/{_REDDIT_MULTI}/hot/"
 _REDDIT_UA = "python:ah-monitor-hotlist:v1.0 (by /u/ah_monitor_reader)"
 
 
-def _reddit_rss_entries(url: str) -> List[dict]:
+def _reddit_rss_entries(url: str, retries: int = 3) -> List[dict]:
     """拉取一个 Reddit Atom RSS，返回 {title,url,tagline}；失败返回空列表。
-    429 时只短暂重试一次，避免拖慢整页构建。"""
+    遇 429 时加长退避再试，保证多版块合集能拿到，而不是静默只剩 iosapps。"""
     resp = None
-    for attempt in range(2):
+    for attempt in range(retries):
         try:
             resp = SESSION.get(
                 url,
                 headers={"User-Agent": _REDDIT_UA,
                          "Accept": "application/atom+xml, application/xml"},
-                timeout=15,
+                timeout=20,
             )
             if resp.status_code == 200 and resp.content:
                 break
-            if resp.status_code == 429 and attempt == 0:
-                time.sleep(5)
+            if resp.status_code == 429 and attempt < retries - 1:
+                time.sleep(12 * (attempt + 1))
                 continue
             break
         except Exception:
-            if attempt == 0:
-                time.sleep(2)
+            if attempt < retries - 1:
+                time.sleep(3 * (attempt + 1))
     if resp is None or resp.status_code != 200 or not resp.content:
         code = resp.status_code if resp is not None else "no-response"
         print(f"  [Reddit] RSS 抓取失败: HTTP {code}")
@@ -846,45 +846,80 @@ def _reddit_rss_entries(url: str) -> List[dict]:
     return rows
 
 
+def _reddit_is_iosapps(tagline: str) -> bool:
+    t = (tagline or "").strip().lower()
+    return t in ("r/iosapps", "iosapps")
+
+
 def fetch_reddit(limit: int = 20) -> List[dict]:
-    """Reddit：抓取面向个人开发者与创意 idea 的多个子版块热帖。
-    r/iosapps 固定放在列表最前，其余来自 SideProject / indiehackers / AppIdeas 等。
-    优先：iosapps 单拉 + 其余版块一次合集请求（快）；合集 429 时不再逐个重试拖时间。"""
-    ios_cap = min(8, max(4, limit // 2))
-    other_subs = _REDDIT_SUBS[1:]
-    other_multi = "+".join(other_subs)
-    ordered: List[dict] = []
-    seen = set()
-
-    def _absorb(rows: List[dict], default_sub: str = ""):
-        for row in rows:
-            key = row.get("url") or row.get("title")
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            if not row.get("tagline") and default_sub:
-                row["tagline"] = f"r/{default_sub}"
-            ordered.append(row)
-            if len(ordered) >= limit:
-                return
-
-    # 1) iosapps 置顶
-    _absorb(
-        _reddit_rss_entries(
-            f"https://www.reddit.com/r/iosapps/hot/.rss?limit={ios_cap}"
-        ),
-        "iosapps",
+    """Reddit：一次拉取全部目标子版块 hot 合集，再整理展示顺序。
+    r/iosapps 固定排在最前；其余 SideProject / indiehackers / AppIdeas 等按版块轮询均分，
+    避免单一活跃版块占满。不再先单拉 iosapps 再拉合集（第二次易 429 导致只剩 iosapps）。"""
+    fetch_cap = max(50, limit * 3)
+    rows = _reddit_rss_entries(
+        f"https://www.reddit.com/r/{_REDDIT_MULTI}/hot/.rss?limit={fetch_cap}"
     )
-    # 2) 其余版块一次合集拉取；失败就只用 iosapps，避免串行等待
-    if len(ordered) < limit and other_multi:
-        time.sleep(1.5)
-        _absorb(
-            _reddit_rss_entries(
-                f"https://www.reddit.com/r/{other_multi}/hot/.rss?limit={max(30, limit)}"
-            )
-        )
+    if not rows:
+        print("  [Reddit] 多版块合集失败，模块为空")
+        return []
+
+    ios_rows = [r for r in rows if _reddit_is_iosapps(r.get("tagline", ""))]
+    other_rows = [r for r in rows if not _reddit_is_iosapps(r.get("tagline", ""))]
+    # iosapps 置顶，最多占一半，给其他创意/独立开发版块留位置
+    ios_cap = min(len(ios_rows), max(3, limit // 3))
+    remain = limit - ios_cap
+
+    # 其余版块按 tagline 分桶，轮询取帖，保证多版块都有曝光
+    buckets: Dict[str, List[dict]] = {}
+    order_keys: List[str] = []
+    for r in other_rows:
+        key = (r.get("tagline") or "r/other").strip() or "r/other"
+        if key not in buckets:
+            buckets[key] = []
+            order_keys.append(key)
+        buckets[key].append(r)
+    # 按配置里的子版块顺序优先轮询（大小写不敏感）
+    preferred = []
+    for sub in _REDDIT_SUBS[1:]:
+        want = f"r/{sub}".lower()
+        for k in order_keys:
+            if k.lower() == want and k not in preferred:
+                preferred.append(k)
+    for k in order_keys:
+        if k not in preferred:
+            preferred.append(k)
+
+    picked_others: List[dict] = []
+    idx = {k: 0 for k in preferred}
+    while len(picked_others) < remain and preferred:
+        progressed = False
+        for k in preferred:
+            i = idx[k]
+            bucket = buckets.get(k) or []
+            if i < len(bucket):
+                picked_others.append(bucket[i])
+                idx[k] = i + 1
+                progressed = True
+                if len(picked_others) >= remain:
+                    break
+        if not progressed:
+            break
+
+    ordered = ios_rows[:ios_cap] + picked_others
+    # 去重
+    seen = set()
+    deduped = []
+    for row in ordered:
+        key = row.get("url") or row.get("title")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+        if len(deduped) >= limit:
+            break
+
     items = []
-    for row in ordered[:limit]:
+    for row in deduped:
         zh_title = translate_en2zh(row["title"])
         display = zh_title if zh_title and zh_title != row["title"] else row["title"]
         items.append({
@@ -893,7 +928,11 @@ def fetch_reddit(limit: int = 20) -> List[dict]:
             "tagline": row["tagline"] or "r/iosapps",
             "source": "Reddit",
         })
-    print(f"  [Reddit] {len(items)} 条（iosapps + 独立开发/创意版块）")
+    sub_counts = {}
+    for it in items:
+        sub_counts[it["tagline"]] = sub_counts.get(it["tagline"], 0) + 1
+    detail = " ".join(f"{k}{v}" for k, v in sub_counts.items())
+    print(f"  [Reddit] {len(items)} 条（{detail}）")
     return items
 
 
