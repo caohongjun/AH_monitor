@@ -50,8 +50,8 @@
 | 今日头条 | 头条热榜官方接口 | 实时榜单，按热度排序 | 20 |
 | 微博热搜 | 微博官方访客接口，失败时依次改用 oioweb、tenapi 聚合接口 | 实时榜单 | 20 |
 | 百度热搜 | 百度热搜官方接口 | 实时榜单 | 20 |
-| Reddit | r/all 当日热门（官方 RSS，免登录） | 实时榜单（Reddit 自身的「今日 Top」），标题自动翻译为中文 | 20 |
-| BBC | BBC News 官方 RSS | 当天优先 | 20 |
+| Reddit | 面向个人开发者与创意 idea 的子版块合集：`r/iosapps`（置顶优先）、`r/SideProject`、`r/indiehackers`、`r/AppIdeas`、`r/SomebodyMakeThis`、`r/SaaS`、`r/AlphaAndBetaUsers`、`r/buildinpublic`（官方 RSS，免登录） | 实时榜单（各版块 hot），标题自动翻译为中文；`r/iosapps` 帖子排在最前 | 20 |
+| BBC | BBC News 官方 RSS，并合并 [BBC Travel](https://www.bbc.com/travel) 子频道 | News 当天优先；Travel 近 7 天，条目副标题标 Travel | 20 |
 | 财经要点 | 财经与股市页的「今日要点」 | 当天优先；国内、海外要点合并后按重要性评分排序 | 20 |
 | X热点话题 | 公开趋势汇总站 [getdaytrends](https://getdaytrends.com/) 的全球实时榜。X 官方接口收费且网页有登录墙，这里不登录、不调用官方 API。点击话题打开 X 搜索 | 实时榜单，只取构建时刻的当前榜，不按日期回退 | 20 |
 
@@ -74,8 +74,8 @@
 
 | 模块 | 数据来源 | 更新规则 | 条数上限 |
 |------|----------|----------|----------|
-| GameLook | GameLook 官方 RSS | 最新一天：只展示数据里最新那一天的文章 | 20 |
-| Product Hunt | 开源项目 [producthunt-daily-hot](https://github.com/ViggoZ/producthunt-daily-hot) 每日生成的中文榜单 | 展示**昨天**的每日榜单；该榜单每天北京时间约 15:00 才生成，还没生成时改用前天的榜单。鼠标悬停可展开中文介绍 | 20 |
+| GameLook | GameLook 官网首页（轮播 +「最新资讯」列表），不再走 RSS | 实时快照：直接展示首页上的全部资讯条目 | 20 |
+| Product Hunt | 开源项目 [producthunt-daily-hot](https://github.com/ViggoZ/producthunt-daily-hot) 每日生成的中文榜单 | 从今天往前逐日查找，取上游仓库里**最新一天**的榜单（通常是昨天；约北京时间 15:00 前当天文件可能尚未生成）。鼠标悬停可展开中文介绍 | 20 |
 | GitHub Trending | GitHub Trending 页面 | 实时榜单。仓库名保持原文，描述译为中文（与 Reddit 标题共用同一翻译接口，失败则保留英文），并附今日新增 star 数 | 25 |
 
 ### 财经与股市页

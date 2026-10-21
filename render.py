@@ -827,7 +827,7 @@ _SOURCE_HOME = {
     "今日头条":  "https://www.toutiao.com/",
     "微博热搜":  "https://s.weibo.com/top/summary",
     "百度热搜":  "https://top.baidu.com/board?tab=realtime",
-    "Reddit":     "https://www.reddit.com/r/all/top/?t=day",
+    "Reddit":     "https://www.reddit.com/r/iosapps+SideProject+indiehackers+AppIdeas+SomebodyMakeThis+SaaS+AlphaAndBetaUsers+buildinpublic/hot/",
     "BBC":      "https://www.bbc.com/news",
     "36kr":      "https://www.36kr.com/",
     "量子位":    "https://www.qbitai.com/",

@@ -585,39 +585,53 @@ def translate_en2zh(text: str) -> str:
 
 
 def fetch_ph_leaderboard(limit: int = 20) -> List[dict]:
-    """抓取 Product Hunt 昨日每日榜单（中文数据）。
-    数据源：开源项目 ViggoZ/producthunt-daily-hot 每日生成的 Markdown，
-    直接拉取 raw.githubusercontent.com 上的 data/producthunt-daily-YYYY-MM-DD.md。
-    内容已包含中文标语/介绍/关键词/票数，无需再翻译；时间规则沿用昨日榜。"""
-    yesterday = datetime.now(CN_TZ) - timedelta(days=1)
-    date_str = yesterday.strftime("%Y-%m-%d")
-    items = _fetch_ph_markdown(date_str)
-    # 当日文件尚未生成（GitHub Action 每日 15:01 BJ 才产出）时，回退到前一天
-    if not items:
-        prev = (yesterday - timedelta(days=1)).strftime("%Y-%m-%d")
-        print(f"  [PH榜单] {date_str} 数据未生成，尝试 {prev}")
-        items = _fetch_ph_markdown(prev)
-        date_str = prev
+    """抓取 Product Hunt 最新一日的中文每日榜单。
+    数据源：开源项目 ViggoZ/producthunt-daily-hot 每日生成的 Markdown。
+    榜单一般对应「昨天」；上游约北京时间 15:00 才写出当天文件。
+    从今天往前逐日查找，取到的第一个非空文件就是最新榜，避免固定回退到前天。"""
+    today = NOW.astimezone(CN_TZ).date()
+    date_str = ""
+    items: List[dict] = []
+    for offset in range(0, 5):
+        candidate = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+        items = _fetch_ph_markdown(candidate)
+        if items:
+            date_str = candidate
+            if offset >= 2:
+                print(f"  [PH榜单] 最近 {offset} 天文件为空，改用 {candidate}")
+            break
+        print(f"  [PH榜单] {candidate} 尚无数据，继续往前找")
     if items:
-        print(f"  [PH榜单] GitHub raw 抓取 {len(items)} 条（{date_str} 榜单），"
+        print(f"  [PH榜单] 抓取 {len(items)} 条（{date_str} 榜单），"
               f"榜首: {items[0]['title']}（{items[0].get('votes')} 票）")
+    else:
+        print("  [PH榜单] 近 5 天均无可用数据")
     return items[:limit]
 
 
 def _fetch_ph_markdown(date_str: str) -> List[dict]:
-    """从 GitHub raw 拉取指定日期的 PH 每日 Markdown 并解析为榜单条目。
-    返回空列表表示文件不存在或抓取失败。"""
-    raw_url = (f"https://raw.githubusercontent.com/ViggoZ/producthunt-daily-hot/main/"
-               f"data/producthunt-daily-{date_str}.md")
-    try:
-        resp = SESSION.get(raw_url, timeout=20)
-        if resp.status_code == 404:
-            return []
-        resp.raise_for_status()
-    except Exception as exc:
-        print(f"  [PH榜单] GitHub raw 请求失败 ({date_str}): {exc}")
-        return []
-    return _parse_ph_markdown(resp.text, date_str)
+    """拉取指定日期的 PH 每日 Markdown 并解析。raw.githubusercontent.com 失败时改走 jsDelivr。"""
+    urls = [
+        (f"https://raw.githubusercontent.com/ViggoZ/producthunt-daily-hot/main/"
+         f"data/producthunt-daily-{date_str}.md"),
+        (f"https://cdn.jsdelivr.net/gh/ViggoZ/producthunt-daily-hot@main/"
+         f"data/producthunt-daily-{date_str}.md"),
+    ]
+    for raw_url in urls:
+        try:
+            resp = SESSION.get(raw_url, timeout=20)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            text = (resp.text or "").strip()
+            if not text or text.startswith("404"):
+                continue
+            parsed = _parse_ph_markdown(text, date_str)
+            if parsed:
+                return parsed
+        except Exception as exc:
+            print(f"  [PH榜单] 请求失败 ({date_str}): {exc}")
+    return []
 
 
 def _parse_ph_markdown(md_text: str, date_str: str) -> List[dict]:
@@ -771,30 +785,44 @@ def fetch_baidu_hot(limit: int = 20) -> List[dict]:
         return []
 
 
-# Reddit RSS：r/all 每日热门（top?t=day），未登录即可访问，返回 Atom XML
-_REDDIT_RSS_URL = "https://www.reddit.com/r/all/top/.rss?t=day&limit={cap}"
+# 面向个人开发者 / 创意 idea 的子版块；r/iosapps 固定排第一
+_REDDIT_SUBS = [
+    "iosapps",
+    "SideProject",
+    "indiehackers",
+    "AppIdeas",
+    "SomebodyMakeThis",
+    "SaaS",
+    "AlphaAndBetaUsers",
+    "buildinpublic",
+]
+_REDDIT_MULTI = "+".join(_REDDIT_SUBS)
+_REDDIT_HOME = f"https://www.reddit.com/r/{_REDDIT_MULTI}/hot/"
 # Reddit 要求独特的 User-Agent，推荐格式：平台:应用名:版本 (by /u/用户名)
 _REDDIT_UA = "python:ah-monitor-hotlist:v1.0 (by /u/ah_monitor_reader)"
 
 
-def fetch_reddit(limit: int = 20) -> List[dict]:
-    """Reddit r/all 每日热门讨论：通过官方 RSS（Atom）接口获取，免登录。
-    取当日热度最高的帖子，标题译为中文，subreddit 作为来源标签展示。
-    Reddit 未认证请求有速率限制，内置重试；RSS 不含点赞数，subreddit 作为副标题展示。"""
-    cap = max(30, limit * 2)
-    url = _REDDIT_RSS_URL.format(cap=cap)
+def _reddit_rss_entries(url: str) -> List[dict]:
+    """拉取一个 Reddit Atom RSS，返回 {title,url,tagline}；失败返回空列表。
+    429 时只短暂重试一次，避免拖慢整页构建。"""
     resp = None
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            resp = SESSION.get(url, headers={"User-Agent": _REDDIT_UA,
-                                              "Accept": "application/atom+xml, application/xml"},
-                                timeout=15)
+            resp = SESSION.get(
+                url,
+                headers={"User-Agent": _REDDIT_UA,
+                         "Accept": "application/atom+xml, application/xml"},
+                timeout=15,
+            )
             if resp.status_code == 200 and resp.content:
                 break
-            # 429/403 等限流：指数退避重试
-            time.sleep(2 * (attempt + 1))
+            if resp.status_code == 429 and attempt == 0:
+                time.sleep(5)
+                continue
+            break
         except Exception:
-            time.sleep(2 * (attempt + 1))
+            if attempt == 0:
+                time.sleep(2)
     if resp is None or resp.status_code != 200 or not resp.content:
         code = resp.status_code if resp is not None else "no-response"
         print(f"  [Reddit] RSS 抓取失败: HTTP {code}")
@@ -805,28 +833,175 @@ def fetch_reddit(limit: int = 20) -> List[dict]:
         print(f"  [Reddit] XML 解析失败: {e}")
         return []
     atom = "{http://www.w3.org/2005/Atom}"
-    items = []
+    rows = []
     for entry in root.findall(f"{atom}entry"):
         title = (entry.findtext(f"{atom}title") or "").strip()
         if not title:
             continue
         link_el = entry.find(f"{atom}link")
         link = (link_el.get("href") or "").strip() if link_el is not None else ""
-        # subreddit 在 category 的 label 属性中，如 "r/pics"
         cat_el = entry.find(f"{atom}category")
         subreddit = (cat_el.get("label") or "").strip() if cat_el is not None else ""
-        # 标题译为中文，原文保留作补充；翻译失败则用原文
-        zh_title = translate_en2zh(title)
-        display = zh_title if zh_title and zh_title != title else title
+        rows.append({"title": title, "url": link, "tagline": subreddit})
+    return rows
+
+
+def fetch_reddit(limit: int = 20) -> List[dict]:
+    """Reddit：抓取面向个人开发者与创意 idea 的多个子版块热帖。
+    r/iosapps 固定放在列表最前，其余来自 SideProject / indiehackers / AppIdeas 等。
+    优先：iosapps 单拉 + 其余版块一次合集请求（快）；合集 429 时不再逐个重试拖时间。"""
+    ios_cap = min(8, max(4, limit // 2))
+    other_subs = _REDDIT_SUBS[1:]
+    other_multi = "+".join(other_subs)
+    ordered: List[dict] = []
+    seen = set()
+
+    def _absorb(rows: List[dict], default_sub: str = ""):
+        for row in rows:
+            key = row.get("url") or row.get("title")
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            if not row.get("tagline") and default_sub:
+                row["tagline"] = f"r/{default_sub}"
+            ordered.append(row)
+            if len(ordered) >= limit:
+                return
+
+    # 1) iosapps 置顶
+    _absorb(
+        _reddit_rss_entries(
+            f"https://www.reddit.com/r/iosapps/hot/.rss?limit={ios_cap}"
+        ),
+        "iosapps",
+    )
+    # 2) 其余版块一次合集拉取；失败就只用 iosapps，避免串行等待
+    if len(ordered) < limit and other_multi:
+        time.sleep(1.5)
+        _absorb(
+            _reddit_rss_entries(
+                f"https://www.reddit.com/r/{other_multi}/hot/.rss?limit={max(30, limit)}"
+            )
+        )
+    items = []
+    for row in ordered[:limit]:
+        zh_title = translate_en2zh(row["title"])
+        display = zh_title if zh_title and zh_title != row["title"] else row["title"]
         items.append({
             "title": display,
-            "url": link,
-            "tagline": subreddit,  # subreddit 作为副标题展示（如 r/pics）
+            "url": row["url"],
+            "tagline": row["tagline"] or "r/iosapps",
             "source": "Reddit",
         })
+    print(f"  [Reddit] {len(items)} 条（iosapps + 独立开发/创意版块）")
+    return items
+
+
+def fetch_bbc(limit: int = 20, time_rule: str = "today_yesterday") -> List[dict]:
+    """BBC：主站 News RSS + Travel 子频道 RSS，合并进同一板块。
+    News 按当天优先；Travel 更新较慢，取近 7 天，副标题标 Travel。
+    预留若干名额给 Travel，避免 News 占满后 Travel 进不来；Travel 为空时名额还给 News。"""
+    travel_slots = min(6, max(3, limit // 4))
+    news = fetch_rss(
+        "https://feeds.bbci.co.uk/news/rss.xml", "BBC",
+        limit, time_rule,
+    )
+    travel = fetch_rss(
+        "https://www.bbc.com/travel/feed.rss", "BBC Travel",
+        travel_slots, "recent_7d",
+    )
+    for it in travel:
+        it["source"] = "BBC"
+        it["tagline"] = "Travel"
+    if not travel:
+        travel_slots = 0
+    news_slots = max(1, limit - travel_slots)
+    seen = set()
+    items: List[dict] = []
+    for it in news[:news_slots] + travel[:travel_slots]:
+        key = it.get("url") or it.get("title")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append(it)
         if len(items) >= limit:
             break
-    print(f"  [Reddit] {len(items)} 条（r/all 每日热门）")
+    travel_n = sum(1 for it in items if it.get("tagline") == "Travel")
+    print(f"  [BBC] 合并 {len(items)} 条（含 Travel {travel_n}）")
+    return items
+
+
+def fetch_gamelook(limit: int = 20) -> List[dict]:
+    """GameLook 首页资讯：直接解析官网首页上的轮播与「最新资讯」列表，
+    不再走 RSS / latest_day（RSS 常滞后或只有一天一条）。"""
+    resp = None
+    for attempt in range(3):
+        try:
+            resp = SESSION.get("http://www.gamelook.com.cn/", timeout=20)
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "utf-8"
+            break
+        except Exception as exc:
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            print(f"  [GameLook] 首页抓取失败: {exc}")
+            return []
+    soup = BeautifulSoup(resp.text, "html.parser")
+    items: List[dict] = []
+    seen: Dict[str, int] = {}
+
+    def _parse_day(date_text: str) -> Optional[datetime]:
+        if not date_text:
+            return None
+        try:
+            return datetime.strptime(date_text.strip()[:10], "%Y-%m-%d").replace(tzinfo=CN_TZ)
+        except ValueError:
+            return parse_dt(date_text)
+
+    def _push(title: str, href: str, date_text: str = ""):
+        title = (title or "").strip()
+        href = (href or "").strip()
+        if not title or not href:
+            return
+        if not re.search(r"/\d{4}/\d{2}/\d+/?", href):
+            return
+        dt = _parse_day(date_text)
+        if href in seen:
+            # 轮播常无日期；列表里同 URL 时补上发布时间
+            idx = seen[href]
+            if dt is not None and items[idx].get("time") is None:
+                items[idx]["time"] = dt
+            return
+        seen[href] = len(items)
+        items.append({
+            "title": title,
+            "url": href,
+            "summary": "",
+            "time": dt,
+            "source": "GameLook",
+        })
+
+    # 首页轮播在前，再接「更多资讯 / 最新资讯」主列表
+    for slide in soup.select(".slide-item"):
+        a = (slide.select_one("h3.slide-title a[href]")
+             or slide.select_one("a[href]"))
+        if a is None:
+            continue
+        img = slide.select_one("img[alt]")
+        title = (a.get_text(strip=True) or a.get("title")
+                 or (img.get("alt") if img else "") or "")
+        _push(title, a.get("href", ""))
+    for box in soup.select(".home-section-center li.item .item-content, .item-content"):
+        a = box.select_one("h2 a[href], h3 a[href], a[href]")
+        if a is None:
+            continue
+        date_m = re.search(r"(\d{4}-\d{2}-\d{2})", box.get_text(" ", strip=True))
+        _push(a.get_text(strip=True), a.get("href", ""), date_m.group(1) if date_m else "")
+        if len(items) >= limit:
+            break
+    items = items[:limit]
+    print(f"  [GameLook] 首页资讯 {len(items)} 条")
     return items
 
 
@@ -1335,14 +1510,13 @@ def fetch_x_trends(limit: int = 20, time_rule: str = "realtime") -> List[dict]:
 def build_hotboard_data(market_headlines: dict = None) -> dict:
     """收集今日热榜页数据：社会舆情（含 X 热点话题）、科技动态、游戏与产品，按板块分组返回。
     每个源的时间策略与条数统一从 config.SOURCE_RULES 读取，互不影响"""
-    # 社会舆情板块：头条 + 微博 + 百度（均为实时榜单）+ Reddit 每日热门 + BBC 当日头条 + 财经要点（今天/昨天规则）
+    # 社会舆情：头条/微博/百度实时榜 + Reddit 独立开发版块 + BBC(News+Travel) + 财经要点
     social = {
         "今日头条": fetch_toutiao_hot(source_rule("今日头条", "limit", 20)),
         "微博热搜": fetch_weibo_hot(source_rule("微博热搜", "limit", 20)),
         "百度热搜": fetch_baidu_hot(source_rule("百度热搜", "limit", 20)),
         "Reddit": fetch_reddit(source_rule("Reddit", "limit", 20)),
-        "BBC": fetch_rss("https://feeds.bbci.co.uk/news/rss.xml", "BBC",
-                         source_rule("BBC", "limit", 20),
+        "BBC": fetch_bbc(source_rule("BBC", "limit", 20),
                          source_rule("BBC", "time_rule", "today_yesterday")),
     }
     if market_headlines:
@@ -1379,9 +1553,7 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
     }
     # 游戏与产品板块
     gaming = {
-        "GameLook": fetch_rss("http://www.gamelook.com.cn/feed", "GameLook",
-                              source_rule("GameLook", "limit", 20),
-                              source_rule("GameLook", "time_rule", "latest_day")),
+        "GameLook": fetch_gamelook(source_rule("GameLook", "limit", 20)),
         "Product Hunt": fetch_ph_leaderboard(source_rule("Product Hunt", "limit", 20)),
         "GitHub Trending": fetch_github_trending(source_rule("GitHub Trending", "limit", 25)),
     }
