@@ -153,8 +153,8 @@ SOURCE_RULES = {
     "白鲸出海":       {"time_rule": "latest_day", "limit": 20},
     "微信公众号":     {"time_rule": "realtime", "limit": 15},
     # —— 今日热榜 · 游戏与产品 ——
-    "GameLook":      {"time_rule": "latest_day", "limit": 20},
-    "Product Hunt":  {"time_rule": "realtime", "limit": 20},   # PH 每日榜单固定展示昨日榜
+    "GameLook":      {"time_rule": "realtime", "limit": 20},   # 首页资讯快照，不再按天过滤
+    "Product Hunt":  {"time_rule": "realtime", "limit": 20},   # 取上游仓库里最新一天的每日榜
     "GitHub Trending": {"time_rule": "realtime", "limit": 25},
 }
 
