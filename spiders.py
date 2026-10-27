@@ -1545,6 +1545,96 @@ def fetch_x_trends(limit: int = 20, time_rule: str = "realtime") -> List[dict]:
     return items
 
 
+_GOOGLE_TRENDS_PAGE = "https://trends.google.com/trending?geo=US&hl=en-US"
+_GOOGLE_TRENDS_RSS = "https://trends.google.com/trending/rss?geo=US"
+_TREND_ROW_RE = re.compile(
+    r'\["((?:\\.|[^"\\])*)",null,"US",\[(\d+)\],(?:\[\d+\]|null),null,(\d+),null,\d+,'
+)
+
+
+def _trend_title(raw: str) -> str:
+    return (raw or "").replace('\\"', '"').replace("\\\\", "\\").strip()
+
+
+def _parse_trending_now_html(text: str) -> List[dict]:
+    """解析 Trending Now 页面里不带搜索词的美国热搜。热度是大约搜索量。"""
+    merged: Dict[str, dict] = {}
+    for match in _TREND_ROW_RE.finditer(text or ""):
+        title = _trend_title(match.group(1))
+        if not title or len(title) > 120:
+            continue
+        try:
+            started = int(match.group(2))
+            volume = int(match.group(3))
+        except ValueError:
+            continue
+        key = title.casefold()
+        prev = merged.get(key)
+        if prev is None or volume > prev["volume"]:
+            merged[key] = {"title": title, "volume": volume, "started": started}
+    return sorted(merged.values(), key=lambda row: (row["volume"], row["started"]), reverse=True)
+
+
+def _parse_trending_now_rss(xml_text: str) -> List[dict]:
+    """页面结构变化时，用官方 RSS 兜底。RSS 只含当前约 10 条。"""
+    try:
+        root = ET.fromstring(xml_text.encode("utf-8") if isinstance(xml_text, str) else xml_text)
+    except ET.ParseError:
+        return []
+    ht = "{https://trends.google.com/trending/rss}"
+    rows = []
+    for item in root.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        traffic = (item.findtext(f"{ht}approx_traffic") or "").strip()
+        number = re.search(r"(\d[\d,]*)", traffic)
+        volume = int(number.group(1).replace(",", "")) if number else 0
+        if title:
+            rows.append({"title": title, "volume": volume, "started": 0, "traffic": traffic})
+    return rows
+
+
+def _trend_items(rows: List[dict], limit: int) -> List[dict]:
+    items = []
+    for row in rows[:limit]:
+        traffic = row.get("traffic") or f"{row['volume']:,}+"
+        started = row.get("started") or 0
+        when = datetime.fromtimestamp(started, tz=CN_TZ) if started else None
+        items.append({
+            "title": row["title"],
+            "url": "https://www.google.com/search?q=" + quote(row["title"]),
+            "tagline": traffic,
+            "summary": "",
+            "source": "Google热词",
+            "time": when,
+        })
+    return items
+
+
+def fetch_google_trends(limit: int = 20) -> List[dict]:
+    """社会舆情「Google热词」：美国 Trending Now 当前热搜，不预设关键词。
+    按大约搜索量排序。用来看市场上正在热的词，再自行判断能不能做成提供服务的网站。
+    抓取失败返回空列表。"""
+    rows: List[dict] = []
+    try:
+        resp = SESSION.get(_GOOGLE_TRENDS_PAGE, timeout=25,
+                           headers={"Accept-Language": "en-US,en;q=0.9"})
+        resp.raise_for_status()
+        rows = _parse_trending_now_html(resp.text)
+    except Exception as exc:
+        print(f"  [Google热词] 页面抓取失败: {exc}")
+    if not rows:
+        try:
+            resp = SESSION.get(_GOOGLE_TRENDS_RSS, timeout=20,
+                               headers={"Accept": "application/rss+xml, application/xml"})
+            resp.raise_for_status()
+            rows = _parse_trending_now_rss(resp.text)
+        except Exception as exc:
+            print(f"  [Google热词] RSS 抓取失败: {exc}")
+            return []
+    items = _trend_items(rows, limit)
+    print(f"  [Google热词] {len(items)} 条")
+    return items
+
 
 def build_hotboard_data(market_headlines: dict = None) -> dict:
     """收集今日热榜页数据：社会舆情（含 X 热点话题）、科技动态、游戏与产品，按板块分组返回。
@@ -1576,6 +1666,7 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
     social["X热点话题"] = fetch_x_trends(
         source_rule("X热点话题", "limit", 20),
         source_rule("X热点话题", "time_rule", "realtime"))
+    social["Google热词"] = fetch_google_trends(source_rule("Google热词", "limit", 20))
     # 科技动态板块
     tech = {
         "36kr": fetch_36kr_rss(source_rule("36kr", "limit", 20),
