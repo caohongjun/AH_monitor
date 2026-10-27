@@ -817,7 +817,7 @@ _SOURCE_FAVICON = {
     "白鲸出海":  "baijing.cn",
     "微信公众号": "weixin.qq.com",
     "X热点话题":  "x.com",
-    "工具热词":   "google.com",
+    "Google热词": "google.com",
     "GameLook":  "gamelook.com.cn",
     "Product Hunt": "producthunt.com",
     "GitHub Trending": "github.com",
@@ -837,7 +837,7 @@ _SOURCE_HOME = {
     "白鲸出海":  "https://www.baijing.cn/",
     "微信公众号": "https://weixin.sogou.com/",
     "X热点话题":  "https://x.com/explore",
-    "工具热词":   "https://trends.google.com/trends/explore?date=today%201-m&geo=US",
+    "Google热词": "https://trends.google.com/trending?geo=US",
     "GameLook":  "http://www.gamelook.com.cn/",
     "Product Hunt": "https://www.producthunt.com/",
     "GitHub Trending": "https://github.com/trending",
@@ -980,7 +980,7 @@ function toggleHotSection(btn) {
 </script>
 """
     return _info_page_shell("今日热榜", "🔥", "index.html",
-                            "今日头条 / 微博热搜 / 百度热搜 / Reddit / BBC / 36kr / 量子位 / a16z / ai-bot / 微信公众号 / X热点话题 / 工具热词 / GameLook / Product Hunt / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
+                            "今日头条 / 微博热搜 / 百度热搜 / Reddit / BBC / 36kr / 量子位 / a16z / ai-bot / 微信公众号 / X热点话题 / Google热词 / GameLook / Product Hunt / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
                             sections + toggle_script, NOW.strftime("%Y-%m-%d %H:%M"))
 
 
