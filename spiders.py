@@ -1545,6 +1545,211 @@ def fetch_x_trends(limit: int = 20, time_rule: str = "realtime") -> List[dict]:
     return items
 
 
+# 用来发现「能不能做成工具站」的种子词：上升查询会落到计算器、生成器、转换器这类需求
+_TOOL_TREND_SEEDS = [
+    "calculator",
+    "generator",
+    "converter",
+    "tracker",
+    "template",
+    "planner",
+    "checker",
+    "maker",
+]
+
+
+def _trends_growth_score(formatted: str) -> int:
+    """把上升查询的展示值转成排序分。Breakout 最高，其次是增长百分比"""
+    text = (formatted or "").strip()
+    if text.lower() == "breakout":
+        return 10_000_000
+    if "%" not in text and not text.startswith("+"):
+        return 0
+    match = re.search(r"(\d[\d,]*)", text)
+    if not match:
+        return 0
+    try:
+        return int(match.group(1).replace(",", ""))
+    except ValueError:
+        return 0
+
+
+def _parse_rising_keywords(payload: dict, seed: str) -> List[dict]:
+    """从 relatedsearches 响应里只取上升查询，丢掉 0–100 的热门查询"""
+    lists = (payload.get("default") or {}).get("rankedList") or []
+    rows = []
+    for bucket in lists:
+        for row in bucket.get("rankedKeyword") or []:
+            formatted = str(row.get("formattedValue") or "").strip()
+            if _trends_growth_score(formatted) <= 0 and formatted.lower() != "breakout":
+                continue
+            query = (row.get("query") or "").strip()
+            if not query:
+                continue
+            rows.append({
+                "query": query,
+                "seed": seed,
+                "formatted": formatted,
+                "score": _trends_growth_score(formatted),
+            })
+    return rows
+
+
+def _trends_json(text: str) -> Optional[dict]:
+    """去掉 Google 的 )]}', 前缀后再解析 JSON"""
+    raw = (text or "").lstrip()
+    start = raw.find("{")
+    if start < 0:
+        return None
+    try:
+        data = json.loads(raw[start:])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _trends_get(url: str, params: dict, referer: str) -> Optional[requests.Response]:
+    """Google Trends 对机房 IP 容易 429，失败后退避再试两次"""
+    for attempt in range(3):
+        try:
+            resp = SESSION.get(
+                url, params=params, timeout=20,
+                headers={
+                    "Referer": referer,
+                    "Accept": "application/json, text/plain, */*",
+                },
+            )
+        except Exception:
+            if attempt < 2:
+                time.sleep(4 * (attempt + 1))
+                continue
+            return None
+        if resp.status_code == 200 and resp.text and "Error 429" not in resp.text[:240]:
+            return resp
+        if attempt < 2 and resp.status_code in (429, 500, 502, 503):
+            time.sleep(8 * (attempt + 1))
+            continue
+        return None
+    return None
+
+
+def _fetch_seed_rising(seed: str) -> List[dict]:
+    """一个种子词在美国、最近 30 天、网页搜索下的上升查询"""
+    explore_req = {
+        "comparisonItem": [{"keyword": seed, "geo": "US", "time": "today 1-m"}],
+        "category": 0,
+        "property": "",
+    }
+    referer = ("https://trends.google.com/trends/explore?q="
+               + quote(seed) + "&geo=US&date=today%201-m")
+    resp = _trends_get(
+        "https://trends.google.com/trends/api/explore",
+        {"hl": "en-US", "tz": "360",
+         "req": json.dumps(explore_req, separators=(",", ":"))},
+        referer,
+    )
+    if resp is None:
+        return []
+    data = _trends_json(resp.text)
+    widget = None
+    for item in (data or {}).get("widgets") or []:
+        if "RELATED_QUERIES" in (item.get("id") or ""):
+            widget = item
+            break
+    if not widget or not widget.get("token") or not widget.get("request"):
+        return []
+    time.sleep(1.2)
+    related = _trends_get(
+        "https://trends.google.com/trends/api/widgetdata/relatedsearches",
+        {"hl": "en-US", "tz": "360",
+         "req": json.dumps(widget["request"], separators=(",", ":")),
+         "token": widget["token"]},
+        referer,
+    )
+    if related is None:
+        return []
+    payload = _trends_json(related.text)
+    if not payload:
+        return []
+    return _parse_rising_keywords(payload, seed)
+
+
+# 查询里要出现这类词，才像「提供一项功能的工具站」，而不是新闻或评测
+_TOOL_QUERY_TOKENS = (
+    "calculator", "generator", "converter", "tracker", "template", "planner",
+    "checker", "maker", "builder", "creator", "translator", "editor",
+    "compressor", "designer", "scheduler", "formatter",
+)
+
+
+def _is_tool_query(query: str) -> bool:
+    text = (query or "").casefold()
+    return any(token in text for token in _TOOL_QUERY_TOKENS)
+
+
+def _select_tool_trends(rows: List[dict], limit: int) -> List[dict]:
+    """去掉非工具查询，同一关键词留增长更高的一条，再按种子词轮询，避免一个词占满"""
+    merged: Dict[str, dict] = {}
+    for row in rows:
+        if not _is_tool_query(row.get("query", "")):
+            continue
+        key = row["query"].casefold()
+        prev = merged.get(key)
+        if prev is None or row["score"] > prev["score"]:
+            merged[key] = row
+    buckets: Dict[str, List[dict]] = {}
+    for seed in _TOOL_TREND_SEEDS:
+        picked = [row for row in merged.values() if row["seed"] == seed]
+        picked.sort(key=lambda row: row["score"], reverse=True)
+        if picked:
+            buckets[seed] = picked
+    selected: List[dict] = []
+    while len(selected) < limit and buckets:
+        for seed in list(_TOOL_TREND_SEEDS):
+            bucket = buckets.get(seed)
+            if not bucket:
+                continue
+            selected.append(bucket.pop(0))
+            if not bucket:
+                buckets.pop(seed, None)
+            if len(selected) >= limit:
+                break
+    return selected
+
+
+def fetch_tool_trends(limit: int = 20) -> List[dict]:
+    """社会舆情「工具热词」：抓工具型种子词的 Google Trends 上升查询。
+    只保留查询里带有工具词的结果，供判断能不能做成提供服务的工具站。
+    抓取失败返回空列表。"""
+    collected: List[dict] = []
+    try:
+        SESSION.get("https://trends.google.com/trends/", timeout=15)
+    except Exception:
+        pass
+    for index, seed in enumerate(_TOOL_TREND_SEEDS):
+        if index:
+            time.sleep(2.5)
+        try:
+            rows = _fetch_seed_rising(seed)
+        except Exception as exc:
+            print(f"  [工具热词] {seed} 抓取失败: {exc}")
+            continue
+        print(f"  [工具热词] {seed} 上升查询 {len(rows)} 条")
+        collected.extend(rows)
+    selected = _select_tool_trends(collected, limit)
+    items = []
+    for row in selected:
+        label = row["formatted"] or "Rising"
+        items.append({
+            "title": row["query"],
+            "url": "https://www.google.com/search?q=" + quote(row["query"]),
+            "tagline": f"{label} · {row['seed']}",
+            "summary": "",
+            "source": "工具热词",
+        })
+    print(f"  [工具热词] {len(items)} 条")
+    return items
+
 
 def build_hotboard_data(market_headlines: dict = None) -> dict:
     """收集今日热榜页数据：社会舆情（含 X 热点话题）、科技动态、游戏与产品，按板块分组返回。
@@ -1576,6 +1781,7 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
     social["X热点话题"] = fetch_x_trends(
         source_rule("X热点话题", "limit", 20),
         source_rule("X热点话题", "time_rule", "realtime"))
+    social["工具热词"] = fetch_tool_trends(source_rule("工具热词", "limit", 20))
     # 科技动态板块
     tech = {
         "36kr": fetch_36kr_rss(source_rule("36kr", "limit", 20),
