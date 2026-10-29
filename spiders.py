@@ -1636,6 +1636,53 @@ def fetch_google_trends(limit: int = 20) -> List[dict]:
     return items
 
 
+def fetch_shipped_paid(limit: int = 20) -> List[dict]:
+    """Shipped & Paid 本周新增产品。产品名保持原文，介绍译成中文，翻译失败则保留英文。
+    数据来自 /new/（New this week）。抓取失败返回空列表。"""
+    try:
+        resp = SESSION.get("https://shippedandpaid.com/new/", timeout=20)
+        resp.raise_for_status()
+    except Exception as exc:
+        print(f"  [Shipped & Paid] 抓取失败: {exc}")
+        return []
+    soup = BeautifulSoup(resp.text, "html.parser")
+    items = []
+    seen = set()
+    for card in soup.select("article.card"):
+        name_el = card.select_one(".card-name")
+        sum_el = card.select_one(".card-sum")
+        link_el = card.select_one("a.card-link[href]")
+        title = name_el.get_text(" ", strip=True) if name_el else ""
+        intro = sum_el.get_text(" ", strip=True) if sum_el else ""
+        href = (link_el.get("href") if link_el else "") or ""
+        if href.startswith("/"):
+            href = "https://shippedandpaid.com" + href
+        if not title or not href or href in seen:
+            continue
+        seen.add(href)
+        when = None
+        added = (card.get("data-added") or "").strip()
+        if added:
+            try:
+                when = datetime.strptime(added[:10], "%Y-%m-%d").replace(tzinfo=CN_TZ)
+            except ValueError:
+                when = None
+        zh = translate_en2zh(intro) if intro else ""
+        text = zh or intro
+        items.append({
+            "title": title,
+            "url": href,
+            "tagline": text,
+            "summary": text,
+            "source": "Shipped & Paid",
+            "time": when,
+        })
+        if len(items) >= limit:
+            break
+    print(f"  [Shipped & Paid] {len(items)} 条")
+    return items
+
+
 def build_hotboard_data(market_headlines: dict = None) -> dict:
     """收集今日热榜页数据：社会舆情（含 X 热点话题）、科技动态、游戏与产品，按板块分组返回。
     每个源的时间策略与条数统一从 config.SOURCE_RULES 读取，互不影响"""
@@ -1685,6 +1732,7 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
     gaming = {
         "GameLook": fetch_gamelook(source_rule("GameLook", "limit", 20)),
         "Product Hunt": fetch_ph_leaderboard(source_rule("Product Hunt", "limit", 20)),
+        "Shipped & Paid": fetch_shipped_paid(source_rule("Shipped & Paid", "limit", 20)),
         "GitHub Trending": fetch_github_trending(source_rule("GitHub Trending", "limit", 25)),
     }
     print("  [热榜] 社会舆情:" + " ".join(f"{k}{len(v)}" for k, v in social.items())
