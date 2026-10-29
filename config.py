@@ -156,6 +156,7 @@ SOURCE_RULES = {
     # —— 今日热榜 · 游戏与产品 ——
     "GameLook":      {"time_rule": "realtime", "limit": 20},   # 首页资讯快照，不再按天过滤
     "Product Hunt":  {"time_rule": "realtime", "limit": 20},   # 取上游仓库里最新一天的每日榜
+    "Shipped & Paid": {"time_rule": "realtime", "limit": 20},  # 站点「本周新增」列表
     "GitHub Trending": {"time_rule": "realtime", "limit": 25},
 }
 

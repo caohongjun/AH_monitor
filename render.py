@@ -820,6 +820,7 @@ _SOURCE_FAVICON = {
     "Google热词": "google.com",
     "GameLook":  "gamelook.com.cn",
     "Product Hunt": "producthunt.com",
+    "Shipped & Paid": "shippedandpaid.com",
     "GitHub Trending": "github.com",
 }
 
@@ -840,6 +841,7 @@ _SOURCE_HOME = {
     "Google热词": "https://trends.google.com/trending?geo=US",
     "GameLook":  "http://www.gamelook.com.cn/",
     "Product Hunt": "https://www.producthunt.com/",
+    "Shipped & Paid": "https://shippedandpaid.com/new/",
     "GitHub Trending": "https://github.com/trending",
 }
 
@@ -887,7 +889,7 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
         desc_html = f'<div class="text-xs text-slate-500 mt-0.5 truncate">{html.escape(str(desc)[:80])}</div>' if desc else ""
         hot_badge = f'<span class="text-[10px] text-slate-600 ml-auto shrink-0">{html.escape(str(hot))}</span>' if hot and not desc else ""
         # Product Hunt / a16z 板块支持 hover 展开正文（PH 中文介绍 / a16z 完整原文）
-        expandable = source_name in ("Product Hunt", "a16z")
+        expandable = source_name in ("Product Hunt", "a16z", "Shipped & Paid")
         intro = (it.get("content") or it.get("summary") or "").strip() if expandable else ""
         intro_expand = ""
         if intro:
@@ -980,7 +982,7 @@ function toggleHotSection(btn) {
 </script>
 """
     return _info_page_shell("今日热榜", "🔥", "index.html",
-                            "今日头条 / 微博热搜 / 百度热搜 / Reddit / BBC / 36kr / 量子位 / a16z / ai-bot / 微信公众号 / X热点话题 / Google热词 / GameLook / Product Hunt / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
+                            "今日头条 / 微博热搜 / 百度热搜 / Reddit / BBC / 36kr / 量子位 / a16z / ai-bot / 微信公众号 / X热点话题 / Google热词 / GameLook / Product Hunt / Shipped & Paid / GitHub Trending · 每日 09:30 / 18:00（北京时间）自动构建",
                             sections + toggle_script, NOW.strftime("%Y-%m-%d %H:%M"))
 
 

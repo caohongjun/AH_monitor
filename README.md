@@ -77,6 +77,7 @@
 |------|----------|----------|----------|
 | GameLook | GameLook 官网首页（轮播 +「最新资讯」列表），不再走 RSS | 实时快照：直接展示首页上的全部资讯条目 | 20 |
 | Product Hunt | 开源项目 [producthunt-daily-hot](https://github.com/ViggoZ/producthunt-daily-hot) 每日生成的中文榜单 | 从今天往前逐日查找，取上游仓库里**最新一天**的榜单（通常是昨天；约北京时间 15:00 前当天文件可能尚未生成）。鼠标悬停可展开中文介绍 | 20 |
+| Shipped & Paid | [shippedandpaid.com/new](https://shippedandpaid.com/new/) 本周新增。产品名保持原文，介绍译成中文（与 Reddit 标题共用同一翻译接口，失败则保留英文）。点击打开站内案例页，悬停可看完整介绍 | 实时快照：展示「New this week」列表，按站点顺序，不另做日期过滤 | 20 |
 | GitHub Trending | GitHub Trending 页面 | 实时榜单。仓库名保持原文，描述译为中文（与 Reddit 标题共用同一翻译接口，失败则保留英文），并附今日新增 star 数 | 25 |
 
 ### 财经与股市页
