@@ -886,20 +886,30 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
         vote_badge = (f'<span class="text-[10px] text-orange-300/90 bg-orange-500/10 border '
                       f'border-orange-500/20 rounded px-1.5 py-0.5 shrink-0" title="Product Hunt 投票数">'
                       f'▲ {html.escape(str(votes))}</span>') if votes else ""
-        desc_html = f'<div class="text-xs text-slate-500 mt-0.5 truncate">{html.escape(str(desc)[:80])}</div>' if desc else ""
         hot_badge = f'<span class="text-[10px] text-slate-600 ml-auto shrink-0">{html.escape(str(hot))}</span>' if hot and not desc else ""
-        # Product Hunt / a16z 板块支持 hover 展开正文（PH 中文介绍 / a16z 完整原文）
+        # Product Hunt / a16z / Shipped & Paid 悬停展开正文
         expandable = source_name in ("Product Hunt", "a16z", "Shipped & Paid")
         intro = (it.get("content") or it.get("summary") or "").strip() if expandable else ""
+        # 列表上的一行和悬停全文是同一段时，悬停后藏起截断行，避免开头重复出现
+        preview = " ".join(str(desc).split())[:80]
+        full = " ".join(intro.split())
+        same_text = bool(preview) and bool(full) and (full.startswith(preview) or preview.startswith(full[:80]))
+        # 全文不比一行预览更长时，不再展开第二段
+        show_expand = bool(intro) and not (same_text and len(full) <= len(preview))
+        desc_cls = "text-xs text-slate-500 mt-0.5 truncate"
+        if show_expand and same_text:
+            desc_cls += " group-hover:hidden"
+        desc_html = (f'<div class="{desc_cls}">{html.escape(str(desc)[:80])}</div>'
+                     if desc else "")
         intro_expand = ""
-        if intro:
+        if show_expand:
             intro_expand = (
                 f'<div class="max-h-0 overflow-hidden transition-all duration-200 '
                 f'group-hover:max-h-48 group-hover:overflow-y-auto group-hover:scroll-thin '
                 f'text-xs text-slate-400 leading-relaxed mt-1 break-words whitespace-pre-line">'
                 f'{html.escape(intro)}</div>'
             )
-        link_extra = ' title="{}"'.format(html.escape(intro or title, quote=True)) if expandable else ""
+        link_extra = ""
         group_cls = " group" if expandable else ""
         rows.append(f"""
           <a href="{html.escape(url, quote=True)}" target="_blank" rel="noopener noreferrer"
