@@ -887,9 +887,15 @@ def _hot_module(source_name: str, items: List[dict]) -> str:
                       f'border-orange-500/20 rounded px-1.5 py-0.5 shrink-0" title="Product Hunt 投票数">'
                       f'▲ {html.escape(str(votes))}</span>') if votes else ""
         hot_badge = f'<span class="text-[10px] text-slate-600 ml-auto shrink-0">{html.escape(str(hot))}</span>' if hot and not desc else ""
-        # Product Hunt / a16z / Shipped & Paid 悬停展开正文
-        expandable = source_name in ("Product Hunt", "a16z", "Shipped & Paid")
-        intro = (it.get("content") or it.get("summary") or "").strip() if expandable else ""
+        # Product Hunt / a16z / Shipped & Paid 悬停展开正文；BBC 悬停展开中文译文
+        hover_zh = (it.get("hover_zh") or "").strip()
+        expandable = source_name in ("Product Hunt", "a16z", "Shipped & Paid") or bool(hover_zh)
+        if hover_zh:
+            intro = hover_zh
+        elif expandable:
+            intro = (it.get("content") or it.get("summary") or "").strip()
+        else:
+            intro = ""
         # 列表上的一行和悬停全文是同一段时，悬停后藏起截断行，避免开头重复出现
         preview = " ".join(str(desc).split())[:80]
         full = " ".join(intro.split())

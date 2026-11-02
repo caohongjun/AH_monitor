@@ -352,11 +352,12 @@ import email.utils as _email_utils
 
 
 def fetch_rss(url: str, source_name: str, limit: int = 20,
-              time_rule: str = "today_yesterday") -> List[dict]:
+              time_rule: str = "today_yesterday",
+              summary_chars: int = 120) -> List[dict]:
     """通用 RSS 2.0 / Atom 抓取解析：返回条目列表，时间统一转为北京时间。
     时间策略 time_rule 见 config.SOURCE_RULES：today_yesterday 只保留当天（无则前一天，
     再无则空），realtime 不过滤。为避免先截断后过滤导致丢数据，解析时多取若干条，
-    过滤完成后再截到 limit。"""
+    过滤完成后再截到 limit。summary_chars 控制摘要保留长度。"""
     # 解析上限放大：feed 里可能混有更早的条目，多取才能覆盖今天/昨天的全量
     fetch_cap = max(50, limit * 3)
     try:
@@ -386,7 +387,7 @@ def fetch_rss(url: str, source_name: str, limit: int = 20,
             if not title:
                 continue
             items.append({"title": title, "url": link, "time": dt,
-                          "summary": desc[:120], "source": source_name})
+                          "summary": desc[:summary_chars], "source": source_name})
             if len(items) >= fetch_cap:
                 break
     else:
@@ -404,7 +405,7 @@ def fetch_rss(url: str, source_name: str, limit: int = 20,
             if not title:
                 continue
             items.append({"title": title, "url": link, "time": dt,
-                          "summary": desc[:120], "source": source_name})
+                          "summary": desc[:summary_chars], "source": source_name})
             if len(items) >= fetch_cap:
                 break
     # 按该源独立的时间窗口策略过滤（今天 → 昨天 → 空），再截断到展示上限
@@ -561,9 +562,27 @@ def fetch_qbitai(limit: int = 20, time_rule: str = "latest_day") -> List[dict]:
     return items
 
 
+def _mymemory_translate_en2zh(text: str) -> str:
+    """MyMemory 免费翻译接口，作为 Google 两个客户端都失败时的备用。单次约 500 字符。"""
+    try:
+        resp = SESSION.get(
+            "https://api.mymemory.translated.net/get",
+            params={"q": text[:450], "langpair": "en|zh-CN"},
+            timeout=12)
+        resp.raise_for_status()
+        zh = html.unescape(
+            ((resp.json().get("responseData") or {}).get("translatedText") or "")
+        ).strip()
+        if not zh or zh == text or "MYMEMORY WARNING" in zh.upper():
+            return ""
+        return zh
+    except Exception:
+        return ""
+
+
 def translate_en2zh(text: str) -> str:
-    """英文短句翻译为中文（Google translate_a 公开接口，无需密钥）；失败时降级返回原文。
-    gtx 经常被限流，限流或失败时改用 dict-chrome-ex 再试一次。"""
+    """英文短句翻译为中文。优先 Google translate_a：gtx 限流时改试 dict-chrome-ex，
+    两者都失败再走 MyMemory。全部失败则返回原文。"""
     if not text or not re.search(r"[a-zA-Z]{3,}", text):
         return text  # 无英文内容或空串直接返回
     url = "https://translate.googleapis.com/translate_a/single"
@@ -576,12 +595,12 @@ def translate_en2zh(text: str) -> str:
             resp.raise_for_status()
             data = resp.json()
             # 返回结构 [[["译句","原句",...],...]...]，拼接所有翻译分段
-            zh = "".join(seg[0] for seg in (data[0] or []) if seg and seg[0])
-            if zh:
+            zh = "".join(seg[0] for seg in (data[0] or []) if seg and seg[0]).strip()
+            if zh and zh != text:
                 return zh
         except Exception:
             continue
-    return text
+    return _mymemory_translate_en2zh(text) or text
 
 
 def fetch_ph_leaderboard(limit: int = 20) -> List[dict]:
@@ -936,18 +955,35 @@ def fetch_reddit(limit: int = 20) -> List[dict]:
     return items
 
 
+def _bbc_hover_zh(title: str, summary: str) -> str:
+    """把英文标题和摘要译成中文，供 hover 展示。翻译失败则返回空串。"""
+    title = (title or "").strip()
+    summary = (summary or "").strip()
+    if summary and title and (summary == title or summary.startswith(title)):
+        summary = summary[len(title):].strip(" \t-—:：")
+    parts = [p for p in (title, summary) if p]
+    if not parts:
+        return ""
+    src = "\n".join(parts)
+    zh = translate_en2zh(src)
+    if not zh or zh == src:
+        return ""
+    return zh.strip()
+
+
 def fetch_bbc(limit: int = 20, time_rule: str = "today_yesterday") -> List[dict]:
     """BBC：主站 News RSS + Travel 子频道 RSS，合并进同一板块。
     News 按当天优先；Travel 更新较慢，取近 7 天，副标题标 Travel。
-    预留若干名额给 Travel，避免 News 占满后 Travel 进不来；Travel 为空时名额还给 News。"""
+    预留若干名额给 Travel，避免 News 占满后 Travel 进不来；Travel 为空时名额还给 News。
+    列表仍展示英文；中文译文写入 hover_zh，悬停时展开。"""
     travel_slots = min(6, max(3, limit // 4))
     news = fetch_rss(
         "https://feeds.bbci.co.uk/news/rss.xml", "BBC",
-        limit, time_rule,
+        limit, time_rule, summary_chars=300,
     )
     travel = fetch_rss(
         "https://www.bbc.com/travel/feed.rss", "BBC Travel",
-        travel_slots, "recent_7d",
+        travel_slots, "recent_7d", summary_chars=300,
     )
     for it in travel:
         it["source"] = "BBC"
@@ -965,8 +1001,16 @@ def fetch_bbc(limit: int = 20, time_rule: str = "today_yesterday") -> List[dict]
         items.append(it)
         if len(items) >= limit:
             break
+    translated = 0
+    for i, it in enumerate(items):
+        zh = _bbc_hover_zh(it.get("title") or "", it.get("summary") or "")
+        if zh:
+            it["hover_zh"] = zh
+            translated += 1
+        if i != len(items) - 1:
+            time.sleep(0.2)
     travel_n = sum(1 for it in items if it.get("tagline") == "Travel")
-    print(f"  [BBC] 合并 {len(items)} 条（含 Travel {travel_n}）")
+    print(f"  [BBC] 合并 {len(items)} 条（含 Travel {travel_n}），hover 中文译文 {translated} 条")
     return items
 
 
