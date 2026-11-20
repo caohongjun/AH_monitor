@@ -815,53 +815,67 @@ _REDDIT_SUBS = [
     "AlphaAndBetaUsers",
     "buildinpublic",
 ]
-_REDDIT_MULTI = "+".join(_REDDIT_SUBS)
-_REDDIT_HOME = f"https://www.reddit.com/r/{_REDDIT_MULTI}/hot/"
-# Reddit 要求独特的 User-Agent，推荐格式：平台:应用名:版本 (by /u/用户名)
+# 官方 RSS 已于 2026-11-18 关闭（rss.reddit.com 固定返回 404），
+# 网页和 .json 会落到验证码或 403。改读 Arctic Shift 公开归档里的最新帖。
+_REDDIT_ARCHIVE = "https://arctic-shift.photon-reddit.com/api/posts/search"
 _REDDIT_UA = "python:ah-monitor-hotlist:v1.0 (by /u/ah_monitor_reader)"
+_REDDIT_MIN_PER_SUB = 5
 
 
-def _reddit_rss_entries(url: str, retries: int = 3) -> List[dict]:
-    """拉取一个 Reddit Atom RSS，返回 {title,url,tagline}；失败返回空列表。
-    遇 429 时加长退避再试，保证多版块合集能拿到，而不是静默只剩 iosapps。"""
+def _reddit_sub_rows(sub: str, limit: int = 5, after: str = "14d") -> List[dict]:
+    """拉一个子版块的最新帖，返回 {title,url,tagline}。超时或限流时退避重试。"""
+    params = {
+        "subreddit": sub,
+        "limit": limit,
+        "sort": "desc",
+        "after": after,
+        "fields": "id,title,subreddit,created_utc",
+    }
     resp = None
-    for attempt in range(retries):
+    for attempt in range(3):
         try:
             resp = SESSION.get(
-                url,
-                headers={"User-Agent": _REDDIT_UA,
-                         "Accept": "application/atom+xml, application/xml"},
-                timeout=20,
+                _REDDIT_ARCHIVE,
+                params=params,
+                headers={"User-Agent": _REDDIT_UA, "Accept": "application/json"},
+                timeout=25,
             )
-            if resp.status_code == 200 and resp.content:
+            if resp.status_code == 200:
                 break
-            if resp.status_code == 429 and attempt < retries - 1:
-                time.sleep(12 * (attempt + 1))
+            if resp.status_code in (422, 429, 500, 502, 503) and attempt < 2:
+                time.sleep(4 * (attempt + 1))
                 continue
             break
         except Exception:
-            if attempt < retries - 1:
+            resp = None
+            if attempt < 2:
                 time.sleep(3 * (attempt + 1))
-    if resp is None or resp.status_code != 200 or not resp.content:
+    if resp is None or resp.status_code != 200:
         code = resp.status_code if resp is not None else "no-response"
-        print(f"  [Reddit] RSS 抓取失败: HTTP {code}")
+        print(f"  [Reddit] r/{sub} 抓取失败: HTTP {code}")
         return []
     try:
-        root = ET.fromstring(resp.content)
+        payload = resp.json()
     except Exception as e:
-        print(f"  [Reddit] XML 解析失败: {e}")
+        print(f"  [Reddit] r/{sub} JSON 解析失败: {e}")
         return []
-    atom = "{http://www.w3.org/2005/Atom}"
+    if payload.get("error"):
+        print(f"  [Reddit] r/{sub} 接口错误: {payload.get('error')}")
+        return []
     rows = []
-    for entry in root.findall(f"{atom}entry"):
-        title = (entry.findtext(f"{atom}title") or "").strip()
-        if not title:
+    for post in payload.get("data") or []:
+        title = (post.get("title") or "").strip()
+        pid = str(post.get("id") or "").strip()
+        if pid.startswith("t3_"):
+            pid = pid[3:]
+        name = (post.get("subreddit") or sub).strip()
+        if not title or not pid or not name:
             continue
-        link_el = entry.find(f"{atom}link")
-        link = (link_el.get("href") or "").strip() if link_el is not None else ""
-        cat_el = entry.find(f"{atom}category")
-        subreddit = (cat_el.get("label") or "").strip() if cat_el is not None else ""
-        rows.append({"title": title, "url": link, "tagline": subreddit})
+        rows.append({
+            "title": title,
+            "url": f"https://www.reddit.com/r/{name}/comments/{pid}/",
+            "tagline": f"r/{name}",
+        })
     return rows
 
 
@@ -870,22 +884,32 @@ def _reddit_is_iosapps(tagline: str) -> bool:
     return t in ("r/iosapps", "iosapps")
 
 
-def fetch_reddit(limit: int = 20) -> List[dict]:
-    """Reddit：一次拉取全部目标子版块 hot 合集，再整理展示顺序。
-    r/iosapps 固定排在最前；其余 SideProject / indiehackers / AppIdeas 等按版块轮询均分，
-    避免单一活跃版块占满。不再先单拉 iosapps 再拉合集（第二次易 429 导致只剩 iosapps）。"""
-    fetch_cap = max(50, limit * 3)
-    rows = _reddit_rss_entries(
-        f"https://www.reddit.com/r/{_REDDIT_MULTI}/hot/.rss?limit={fetch_cap}"
-    )
+def fetch_reddit(limit: int = 40) -> List[dict]:
+    """Reddit：逐个拉取目标子版块的最新帖，再整理展示顺序。
+    官方 hot RSS 已关闭，这里用公开归档的最新帖代替热度序。
+    每个子版块至少 5 条；r/iosapps 固定排在最前，其余版块按配置顺序轮询。"""
+    limit = max(int(limit or 0), _REDDIT_MIN_PER_SUB * len(_REDDIT_SUBS))
+    per_sub = _REDDIT_MIN_PER_SUB
+    rows: List[dict] = []
+    for i, sub in enumerate(_REDDIT_SUBS):
+        if i:
+            time.sleep(1.2)
+        got = _reddit_sub_rows(sub, per_sub)
+        # 近 14 天不足 5 条时，放宽到一年，避免冷门版块凑不满
+        if len(got) < _REDDIT_MIN_PER_SUB:
+            time.sleep(1.2)
+            wider = _reddit_sub_rows(sub, per_sub, after="1year")
+            if len(wider) > len(got):
+                got = wider
+        rows.extend(got)
     if not rows:
-        print("  [Reddit] 多版块合集失败，模块为空")
+        print("  [Reddit] 各版块均无数据，模块为空")
         return []
 
     ios_rows = [r for r in rows if _reddit_is_iosapps(r.get("tagline", ""))]
     other_rows = [r for r in rows if not _reddit_is_iosapps(r.get("tagline", ""))]
-    # iosapps 置顶，最多占一半，给其他创意/独立开发版块留位置
-    ios_cap = min(len(ios_rows), max(3, limit // 3))
+    # iosapps 置顶，和其他版块一样先保证 5 条，不单独占满名额
+    ios_cap = min(len(ios_rows), _REDDIT_MIN_PER_SUB)
     remain = limit - ios_cap
 
     # 其余版块按 tagline 分桶，轮询取帖，保证多版块都有曝光
@@ -1735,7 +1759,7 @@ def build_hotboard_data(market_headlines: dict = None) -> dict:
         "今日头条": fetch_toutiao_hot(source_rule("今日头条", "limit", 20)),
         "微博热搜": fetch_weibo_hot(source_rule("微博热搜", "limit", 20)),
         "百度热搜": fetch_baidu_hot(source_rule("百度热搜", "limit", 20)),
-        "Reddit": fetch_reddit(source_rule("Reddit", "limit", 20)),
+        "Reddit": fetch_reddit(source_rule("Reddit", "limit", 40)),
         "BBC": fetch_bbc(source_rule("BBC", "limit", 20),
                          source_rule("BBC", "time_rule", "today_yesterday")),
     }

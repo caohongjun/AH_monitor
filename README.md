@@ -50,7 +50,7 @@
 | 今日头条 | 头条热榜官方接口 | 实时榜单，按热度排序 | 20 |
 | 微博热搜 | 微博官方访客接口，失败时依次改用 oioweb、tenapi 聚合接口 | 实时榜单 | 20 |
 | 百度热搜 | 百度热搜官方接口 | 实时榜单 | 20 |
-| Reddit | 面向个人开发者与创意 idea 的子版块合集：`r/iosapps`（置顶优先）、`r/SideProject`、`r/indiehackers`、`r/AppIdeas`、`r/SomebodyMakeThis`、`r/SaaS`、`r/AlphaAndBetaUsers`、`r/buildinpublic`（官方 RSS，免登录） | 实时榜单（各版块 hot），标题自动翻译为中文；`r/iosapps` 帖子排在最前 | 20 |
+| Reddit | 面向个人开发者与创意 idea 的子版块合集：`r/iosapps`（置顶优先）、`r/SideProject`、`r/indiehackers`、`r/AppIdeas`、`r/SomebodyMakeThis`、`r/SaaS`、`r/AlphaAndBetaUsers`、`r/buildinpublic`。官方 RSS 已于 2026-11-18 关闭，改为 [Arctic Shift](https://arctic-shift.photon-reddit.com) 公开归档 | 各版块最新帖（近 14 天不足则放宽到一年），每个子版块至少 5 条；标题自动翻译为中文，`r/iosapps` 排在最前 | 40 |
 | BBC | BBC News 官方 RSS，并合并 [BBC Travel](https://www.bbc.com/travel) 子频道 | News 当天优先；Travel 近 7 天，条目副标题标 Travel | 20 |
 | 财经要点 | 财经与股市页的「今日要点」 | 当天优先；国内、海外要点合并后按重要性评分排序 | 20 |
 | X热点话题 | 公开趋势汇总站 [getdaytrends](https://getdaytrends.com/) 的全球实时榜。X 官方接口收费且网页有登录墙，这里不登录、不调用官方 API。点击话题打开 X 搜索 | 实时榜单，只取构建时刻的当前榜，不按日期回退 | 20 |

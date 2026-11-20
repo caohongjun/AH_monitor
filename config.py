@@ -141,7 +141,7 @@ SOURCE_RULES = {
     "今日头条":       {"time_rule": "realtime", "limit": 20},
     "微博热搜":       {"time_rule": "realtime", "limit": 20},
     "百度热搜":       {"time_rule": "realtime", "limit": 20},
-    "Reddit":         {"time_rule": "realtime", "limit": 20},
+    "Reddit":         {"time_rule": "realtime", "limit": 40},  # 8 个子版块，每个至少 5 条
     "BBC":          {"time_rule": "today_yesterday", "limit": 20},
     "财经要点":       {"time_rule": "today_yesterday", "limit": 20},
     "X热点话题":      {"time_rule": "realtime", "limit": 20},
